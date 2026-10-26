@@ -23,6 +23,32 @@ class Paths:
     interim: Path
     outputs: Path
     figures: Path
+    reports: Path
+
+
+@dataclass(frozen=True)
+class EDS:
+    base_url: str
+    min_interval_s: float
+
+
+@dataclass(frozen=True)
+class OpenMeteo:
+    base_url: str
+    calls_per_hour: float
+    calls_per_day: float
+    calls_per_location: float
+    min_interval_s: float
+
+
+@dataclass(frozen=True)
+class Data:
+    start: dt.date
+    end: dt.date
+    offline: bool
+    price_area: str
+    eds: EDS
+    openmeteo: OpenMeteo
 
 
 @dataclass(frozen=True)
@@ -60,10 +86,11 @@ class Ensemble:
 @dataclass(frozen=True)
 class NWP:
     source: str
+    model: str
+    variables: tuple[str, ...]
     cycle_utc: int
     availability_lag_h: int
     max_lead_h: int
-    height_m: int
     ensemble: Ensemble
 
 
@@ -158,6 +185,7 @@ class Market:
 @dataclass(frozen=True)
 class Config:
     paths: Paths
+    data: Data
     dates: Dates
     issue: Issue
     nwp: NWP
@@ -253,6 +281,15 @@ def _validate(cfg: Config) -> None:
         " <= test_end < stress_start <= stress_end",
     )
 
+    data = cfg.data
+    _check(data.start < d.train_start, "[data] start must precede [dates] train_start")
+    _check(data.start <= data.end, "[data] start must not be after end")
+    _check(
+        d.stress_end is None or d.stress_end <= data.end, "[dates] stress_end is after [data] end"
+    )
+    om = data.openmeteo
+    _check(0 < om.calls_per_hour <= om.calls_per_day, "[data.openmeteo] call budgets inconsistent")
+
     issue = cfg.issue
     try:
         issue.tz  # noqa: B018 — resolve the zone to validate it
@@ -264,6 +301,7 @@ def _validate(cfg: Config) -> None:
 
     nwp = cfg.nwp
     _check(0 <= nwp.cycle_utc < 24, "[nwp] cycle_utc must be in 0..23")
+    _check(len(nwp.variables) > 0, "[nwp] variables must not be empty")
     hours = _issue_hours_utc(issue)
     _check(
         nwp.cycle_utc + nwp.availability_lag_h <= min(hours),
@@ -314,6 +352,13 @@ def load_config(path: str | Path) -> Config:
     issue = _table(raw, "issue")
     cfg = Config(
         paths=_build(Paths, raw, "paths", **{k: Path(v) for k, v in _table(raw, "paths").items()}),
+        data=_build(
+            Data,
+            raw,
+            "data",
+            eds=_build(EDS, raw, "data.eds"),
+            openmeteo=_build(OpenMeteo, raw, "data.openmeteo"),
+        ),
         dates=_build(Dates, raw, "dates"),
         issue=_build(
             Issue,
@@ -324,7 +369,13 @@ def load_config(path: str | Path) -> Config:
                 issue.get("gate_closure_local", ""), "gate_closure_local"
             ),
         ),
-        nwp=_build(NWP, raw, "nwp", ensemble=_build(Ensemble, raw, "nwp.ensemble")),
+        nwp=_build(
+            NWP,
+            raw,
+            "nwp",
+            variables=tuple(_table(raw, "nwp").get("variables", [])),
+            ensemble=_build(Ensemble, raw, "nwp.ensemble"),
+        ),
         points=_parse_points(raw),
         target=_build(Target, raw, "target"),
         curtailment=_build(Curtailment, raw, "curtailment"),

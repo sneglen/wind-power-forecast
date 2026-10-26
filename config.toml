@@ -3,10 +3,28 @@
 # Values marked "placeholder" are tuned in the step that introduces the corresponding method.
 
 [paths]
-raw = "data/raw/dk1.csv"      # produced by `make data` (Step 1)
-interim = "data/interim"
+raw = "data/raw"              # download cache: responses as received (`make data`)
+interim = "data/interim"      # cleaned UTC tables built from the cache
 outputs = "outputs"
 figures = "figures"
+reports = "reports"           # committed reports, e.g. the data check
+
+[data]
+start = 2024-03-14            # first UTC day downloaded (Open-Meteo HRES archive start)
+end = 2026-10-25              # last UTC day downloaded; fixed so the snapshot is reproducible
+offline = false               # true: never touch the network, fail if the cache is incomplete
+price_area = "DK1"
+
+[data.eds]                    # Energi Data Service (Energinet), CC BY 4.0
+base_url = "https://api.energidataservice.dk"
+min_interval_s = 5.0          # pause between requests; the API returns 429 on bursts
+
+[data.openmeteo]              # Open-Meteo Single Runs API, free tier, CC BY 4.0
+base_url = "https://single-runs-api.open-meteo.com/v1/forecast"
+calls_per_hour = 4500         # free tier: 5000 / hour, 10000 / day
+calls_per_day = 9500
+calls_per_location = 1.0      # conservative: each location in a request counts as a call
+min_interval_s = 1.0
 
 [dates]
 # Target days (local). The last 3 months of training are the validation set.
@@ -29,12 +47,20 @@ max_horizon_h = 38            # plan: 1-37; +1 covers the 25-hour autumn DST day
 power_lag_h = 0               # production known up to the issue time (real-time metering)
 
 [nwp]
-# Core input: ECMWF IFS HRES 9 km via Open-Meteo Single Runs API.
+# Core input: ECMWF IFS HRES 9 km (O1280 grid) via Open-Meteo Single Runs API.
 source = "open-meteo"
+model = "ecmwf_ifs"
+# Core: 100 m speed (m/s) and direction (deg). Extras cost nothing (<= 10 variables per call)
+# and spare a re-download: shear (10/120 m), gusts (max over the past hour, none at lead 0),
+# air density (2 m temperature in C, surface pressure in hPa).
+variables = [
+    "wind_speed_100m", "wind_direction_100m",
+    "wind_speed_10m", "wind_speed_120m", "wind_gusts_10m",
+    "temperature_2m", "surface_pressure",
+]
 cycle_utc = 0
-availability_lag_h = 9        # placeholder (Step 1): verify the run is out before 09:00 UTC
+availability_lag_h = 7        # observed ~6.1 h on Open-Meteo (2026-10-26); +0.9 h margin
 max_lead_h = 72
-height_m = 100                # wind speed and direction at 100 m
 
 [nwp.ensemble]
 # Extension A (Step 8): ECMWF IFS ENS via dynamical.org (dynamical-catalog).
@@ -43,8 +69,9 @@ members = 51
 resolution_deg = 0.25
 step_h = 3                    # interpolated to hourly
 
-# NWP extraction points (lat, lon). Approximate; verified against a land/sea mask in Step 1.
-[points.onshore]              # ~0.5 deg grid over Jutland and Funen
+# NWP extraction points (lat, lon). Onshore points use land grid cells, offshore points sea
+# cells (Open-Meteo `cell_selection`); every point is within 7 km of its grid cell.
+[points.onshore]              # 0.5 deg grid over Jutland and Funen
 on_5750_1000 = [57.50, 10.00]
 on_5700_0850 = [57.00, 8.50]
 on_5700_0950 = [57.00, 9.50]
@@ -61,11 +88,11 @@ on_5500_0900 = [55.00, 9.00]
 [points.offshore]
 horns_rev_1 = [55.53, 7.91]
 horns_rev_2 = [55.60, 7.58]
-horns_rev_3 = [55.70, 7.68]
-vesterhav_nord = [56.55, 8.05]
-vesterhav_syd = [56.00, 8.00]
+horns_rev_3 = [55.70, 7.69]
+vesterhav_nord = [56.68, 8.06]
+vesterhav_syd = [56.03, 8.03]
 anholt = [56.60, 11.21]
-thor = [56.35, 7.70]          # regime-change extension (Step 9)
+thor = [56.36, 7.76]          # 22 km off Thorsminde; regime-change extension (Step 9)
 
 [target]
 # DK1 onshore + offshore production / installed capacity C(t), modelled as one total.

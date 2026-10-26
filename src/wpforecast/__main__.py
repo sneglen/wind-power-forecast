@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import sys
 
@@ -14,6 +15,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="wpforecast", description=__doc__)
     parser.add_argument("stage", choices=[*STAGES, "all"])
     parser.add_argument("--config", default="config.toml", help="path to config TOML")
+    parser.add_argument(
+        "--online", action="store_true", help="allow downloads even if [data] offline = true"
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -21,9 +25,12 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
-    logging.getLogger("matplotlib").setLevel(logging.WARNING)
+    for noisy in ("matplotlib", "httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     try:
         cfg = load_config(args.config)
+        if args.online:
+            cfg = dataclasses.replace(cfg, data=dataclasses.replace(cfg.data, offline=False))
         run_all(cfg) if args.stage == "all" else STAGES[args.stage](cfg)
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         logging.getLogger("wpforecast").error("%s", exc)

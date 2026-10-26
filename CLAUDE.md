@@ -19,6 +19,6 @@ section is filled in when the step finishes.
   magic numbers in code. New keys are typed and validated in `src/wpforecast/config.py`.
 - **Decisions:** every design choice gets a `DECISIONS.md` entry (decision, why, rejected).
   Superseded entries are marked, not deleted.
-- **Data:** nothing under `data/raw` or `data/interim` is committed; only the small sample in
-  `data/sample/`, which must match its generator.
+- **Data:** nothing under `data/raw` or `data/interim` is committed; only the small real-data
+  slice in `data/sample/` (refresh with `make sample`). CI never touches the network.
 - **Code:** lean and tested; match the surrounding style (ruff, line length 100).

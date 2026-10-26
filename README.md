@@ -6,8 +6,8 @@ Day-ahead forecasts of DK1 wind power as calibrated, self-adapting predictive di
 (recursive least squares, time-adaptive quantile regression, bounded distributions), and what
 that uncertainty is worth in the DK1 single-price imbalance market. Data: 2024–2026.
 
-> **Status:** Step 0 — reproducible skeleton. The pipeline runs end to end on a
-> synthetic sample with a climatology benchmark; real data and models follow.
+> **Status:** Step 1 — data acquisition and verification. The pipeline runs end to end on
+> real DK1 data with a climatology benchmark; models follow.
 
 Developed with AI assistance (Claude Code); modelling choices and their reasons are mine and
 recorded in [DECISIONS.md](DECISIONS.md).
@@ -23,9 +23,10 @@ Requires Linux, [uv](https://docs.astral.sh/uv/) and `make`. uv installs the pin
 ```bash
 git clone git@github.com:sneglen/wind-power-forecast.git && cd wind-power-forecast
 make install   # locked environment + pre-commit hooks
-make smoke     # full pipeline on the committed synthetic sample (seconds)
+make smoke     # full pipeline, offline, on a committed 24-day slice of real data
 make test      # test suite
-make all       # full pipeline on real data (data/raw/dk1.csv, from Step 1)
+make data      # download all inputs (resumable; ~2 days on the Open-Meteo free tier)
+make all       # full pipeline on the downloaded data
 ```
 
 Individual stages: `make data`, `make backtest`, `make evaluate`, `make figures`.
@@ -36,7 +37,31 @@ GitHub Actions run for that commit is green (needs the [GitHub CLI](https://cli.
 
 ## Problem and data
 
-_Pending._
+**Target.** Hourly DK1 wind production (onshore + offshore settlement data) divided by
+installed capacity: y = P / C ∈ [0, 1], modelled as one total. DK1 has about 5.7 GW of wind
+(4.1 GW onshore, 1.6 GW offshore) until Thor adds 1.06 GW from March 2026.
+
+**Forecast.** Issued at 11:00 Europe/Copenhagen on D−1, before the 12:00 day-ahead gate
+closure, for every hour of local day D (horizons k = 14–37 h), using the 00 UTC ECMWF run of
+that day and production known up to the issue time.
+
+**Inputs** (UTC days 2024-03-14 .. 2026-10-25, all cached and resumable with `make data`):
+
+| Input | Source | Resolution |
+|---|---|---|
+| Wind production, 4 settlement columns | Energinet | 1 h |
+| Installed capacity C(t) | Energinet, per municipality | 1 month |
+| Energinet's day-ahead wind forecast (benchmark) | Energinet | 1 h |
+| Day-ahead and imbalance prices | Energinet | 1 h / 15 min |
+| ECMWF IFS HRES 00 UTC runs, 19 points, leads 0–72 h | Open-Meteo | 1 h |
+
+The 19 NWP points are 12 onshore cells on a 0.5° grid over Jutland and Funen plus the
+offshore farms Horns Rev 1–3, Vesterhav Nord/Syd, Anholt and Thor. Tables, units and
+caveats: [data/README.md](data/README.md). Coverage, DST and unit checks:
+[reports/data_check.md](reports/data_check.md).
+
+Data: Energinet ([energidataservice.dk](https://www.energidataservice.dk)), CC BY 4.0.
+Weather data by [Open-Meteo.com](https://open-meteo.com/) (ECMWF), CC BY 4.0.
 
 ## Issue-time discipline
 
@@ -92,8 +117,9 @@ _Pending._
   a build artefact. A change counts as done only when CI is green for the pushed commit:
   `git push && make ci-watch` waits for that run (it appears a few seconds after the push),
   follows it to the end and fails if any job fails.
-- **Synthetic sample:** `data/sample/dk1_synthetic.csv` is generated deterministically by
-  `make sample`; a test checks the committed file matches the generator. It is not real data.
+- **Data:** `make data` caches every response in `data/raw/` and records download dates
+  (settlement data is revised for months). CI runs offline on `data/sample/`, a committed
+  24-day slice of real data covering the single-price switch and a DST day.
 
 ## Repository layout
 
@@ -103,11 +129,14 @@ Makefile                  data | backtest | evaluate | figures | all | smoke | t
 src/wpforecast/
   config.py               typed, validated config loading
   pipeline.py             pipeline stages
+  data/                   eds.py · openmeteo.py · capacity.py · build.py · checks.py
   __main__.py             CLI: wpforecast <stage> --config ...
-scripts/                  utilities: synthetic sample generator, CI watcher
+scripts/                  utilities: CI watcher
 tests/                    unit tests, look-ahead test, end-to-end smoke test
-data/sample/              committed synthetic sample + smoke config
+data/README.md            data dictionary, caveats, licences
+data/sample/              committed slice of real data + smoke config
 data/raw, data/interim    downloaded / derived data (git-ignored)
+reports/                  data-check report and figures
 outputs/, figures/        generated artefacts (git-ignored)
 DECISIONS.md              running decision log
 CLAUDE.md                 project rules for AI-assisted work

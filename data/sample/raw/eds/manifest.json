@@ -1,0 +1,26 @@
+{
+  "eds/CapacityPerMunicipality/2025-02-01_2025-03-31.parquet": {
+    "downloaded_at": "2026-10-26T17:09:52.760161+00:00",
+    "rows": 198
+  },
+  "eds/DayAheadPrices/2025-03-08_2025-03-31.parquet": {
+    "downloaded_at": "2026-10-26T17:09:37.554199+00:00",
+    "rows": 0
+  },
+  "eds/Elspotprices/2025-03-08_2025-03-31.parquet": {
+    "downloaded_at": "2026-10-26T17:09:37.509817+00:00",
+    "rows": 576
+  },
+  "eds/Forecasts_Hour/2025-03-08_2025-03-31.parquet": {
+    "downloaded_at": "2026-10-26T17:06:32.546127+00:00",
+    "rows": 1728
+  },
+  "eds/ImbalancePrice/2025-03-08_2025-03-31.parquet": {
+    "downloaded_at": "2026-10-26T17:09:43.029724+00:00",
+    "rows": 2304
+  },
+  "eds/ProductionConsumptionSettlement/2025-03-08_2025-03-31.parquet": {
+    "downloaded_at": "2026-10-26T17:06:27.777881+00:00",
+    "rows": 576
+  }
+}

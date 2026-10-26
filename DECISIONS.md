@@ -52,7 +52,7 @@ and asserts the forecast is unchanged.
 are still estimable from a few months of adaptive data. More extreme levels can be added once
 the bounded-distribution work shows they are calibrated.
 
-### D-008 · 2026-10-26 · Synthetic smoke sample, replaced by real data in Step 1
+### D-008 · 2026-10-26 · Synthetic smoke sample, replaced by real data in Step 1 — *superseded by D-014*
 **Decision:** commit a deterministic synthetic sample (3 weeks, hourly, final schema) and run
 the full pipeline on it in CI.
 **Why:** Step 0 comes before any data is touched, but CI should run the pipeline end to end
@@ -108,3 +108,58 @@ is followed by `make ci-watch`, and a step is not finished until its CI run is g
 3.12.15; outputs matched, but the environments did not. The CI run appears a few seconds after
 a push, so `ci-watch` polls for the run of the pushed commit before following it.
 **Rejected:** relying on the commit badge (easy to miss a red run), or pinning only in CI.
+
+### D-014 · 2026-10-26 · Download cache, offline mode and a real smoke sample
+**Decision:** every response is cached as received: Energi Data Service per dataset and
+calendar year (`data/raw/eds/<Dataset>/<first>_<last>.parquet`, with a manifest of download
+dates), Open-Meteo per run (`data/raw/openmeteo/ecmwf_ifs/<YYYY>/<date>T00.json.gz`). A
+re-run fetches only missing pieces; `offline = true` forbids network access. CI runs the whole
+pipeline offline on a committed 24-day slice of real data (2025-03-08 .. 2025-03-31, 1 MB).
+**Why:** the free API tiers need a resumable download; settlement data is revised, so a
+dated cache is the snapshot; the slice covers the single-price switch (2025-03-19) and a
+23-hour DST day, which a synthetic sample could not.
+**Rejected:** the synthetic sample (D-008); calling the APIs from CI (slow, rate-limited,
+and results would drift with revisions).
+
+### D-015 · 2026-10-26 · Capacity from Energinet's CapacityPerMunicipality
+**Decision:** C(t) = monthly DK1 onshore + offshore capacity from `CapacityPerMunicipality`,
+held from local midnight on the 1st. Municipalities map to DK1 by code (≥ 410, except 411
+Christiansø); non-municipal code 1 is Thor and is mapped explicitly; any other such code
+raises an error.
+**Why:** an API with monthly history, from the same source as the target. Instead of the
+Danish Energy Agency's turbine register named in the plan, which is a spreadsheet download.
+**Caveat:** Thor is registered at its full 1058.4 MW from March 2026 while still being built
+(36 of 72 turbines by July 2026), so y = P / C is biased low in the stress period; Step 9
+scores in MW, as planned.
+
+### D-016 · 2026-10-26 · NWP points, grid cells and availability
+**Decision:** offshore points were checked against published farm locations and moved where
+needed (Vesterhav Nord/Syd, Thor). Onshore points request land grid cells and offshore points
+sea cells (`cell_selection`), two requests per run; every cell is within 7.3 km.
+`availability_lag_h = 7`.
+**Why:** Open-Meteo's default picks a land cell of similar elevation, which put the Vesterhav
+Nord point 18 km away on the coast. Run availability on Open-Meteo was observed at 6.1 h after
+initialisation (2026-10-26), so the 00 UTC run is usable by 07:00 UTC, before the 09:00 UTC
+summer issue time.
+
+### D-017 · 2026-10-26 · Seven NWP variables instead of two
+**Decision:** besides 100 m speed and direction, download 10 m and 120 m speed, 10 m gusts,
+2 m temperature and surface pressure.
+**Why:** Open-Meteo counts extra calls only above 10 variables per request, so these cost
+nothing now and avoid a two-day re-download if Step 5 (gradient boosting) or Step 8 needs
+shear, gusts or air density. The core models use only the 100 m fields.
+
+### D-018 · 2026-10-26 · Open-Meteo free tier with a conservative call budget
+**Decision:** use the free, non-commercial tier with CC BY 4.0 attribution. The downloader
+assumes every location in a request counts as one call (19 per run, undocumented) and keeps
+a rolling ledger under 4500 calls/hour and 9500/day; when the day is spent it stops, and the
+next `make data` resumes. The full archive (957 runs) therefore takes two days.
+**Why:** the portfolio project is non-commercial; staying well inside the limits avoids being
+blocked. The paid Professional plan (≈ €99/month) stays the fallback if data is missing.
+
+### D-019 · 2026-10-26 · Data check as a script and a Markdown report
+**Decision:** `make data` ends with `wpforecast.data.checks`, which writes
+`reports/data_check.md` and figures: coverage and gaps, missing NWP runs, UTC/DST
+consistency, units and ranges, grid cells, and normalised power vs NWP wind speed.
+**Why:** reproducible from `make`, tested in CI on the sample, readable on GitHub.
+**Rejected:** a Jupyter notebook (the plan's wording): harder to test and to diff.

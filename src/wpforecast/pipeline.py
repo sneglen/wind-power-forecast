@@ -1,8 +1,8 @@
 """Pipeline stages: data -> backtest -> evaluate -> figures.
 
-Step 0 wires the stages end to end with a climatological quantile benchmark. Later steps
-replace the internals (real DK1 data, adaptive models, market backtest) behind the same
-stage interfaces.
+``data`` downloads, builds and checks the inputs (Step 1, ``wpforecast.data``). The
+backtest is still the climatological quantile benchmark; later steps replace the internals
+(adaptive models, market backtest) behind the same stage interfaces.
 
 Conventions: timestamps are UTC, hour-beginning. Power is capacity-normalised to [0, 1].
 An observation stamped ``t`` covers ``[t, t + 1h)`` and becomes usable at
@@ -21,7 +21,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from wpforecast import data
 from wpforecast.config import Config
+from wpforecast.data import checks
 
 log = logging.getLogger(__name__)
 
@@ -81,39 +83,15 @@ def _require(path: Path, hint: str) -> Path:
 
 
 def run_data(cfg: Config) -> Path:
-    """Load raw hourly data, validate its schema and write the interim dataset."""
-    raw = _require(
-        cfg.paths.raw,
-        "Real DK1 data ingestion arrives in Step 1; use `make smoke` for the synthetic sample.",
-    )
-    df = pd.read_csv(raw)
+    """Download what is missing, build the interim tables and write the data-check report."""
+    data.acquire(cfg)
+    return cfg.paths.interim / DATASET
 
-    required = ["time_utc", "power_mw", "capacity_mw"] + [f"wind_speed_{p}" for p in cfg.points]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"{raw} is missing columns {missing}")
 
-    df["time_utc"] = pd.to_datetime(df["time_utc"], utc=True)
-    df = df.set_index("time_utc").sort_index()
-    if df.index.has_duplicates:
-        raise ValueError(f"{raw} has duplicate timestamps")
-    if len(df) > 1 and not (df.index.to_series().diff().dropna() == pd.Timedelta("1h")).all():
-        raise ValueError(f"{raw} is not a regular hourly series")
-    if (df["capacity_mw"] <= 0).any():
-        raise ValueError(f"{raw} has non-positive capacity")
-
-    df["power_norm"] = (df["power_mw"] / df["capacity_mw"]).clip(0.0, 1.0)
-
-    lookback = dt.timedelta(days=cfg.model.climatology.window_days + 2)
-    lo = issue_time_utc(cfg, cfg.dates.train_start) - lookback
-    hi = target_hours_utc(cfg, cfg.dates.stress_end)[-1] if cfg.dates.stress_end else None
-    df = df.loc[lo:hi, required[1:] + ["power_norm"]]
-
-    out = cfg.paths.interim / DATASET
-    out.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out)
-    log.info("data: %d rows %s .. %s -> %s", len(df), df.index[0], df.index[-1], out)
-    return out
+def run_check(cfg: Config) -> Path:
+    """Re-run the data checks on the existing interim tables."""
+    checks.run(cfg)
+    return cfg.paths.reports / checks.REPORT
 
 
 def run_backtest(cfg: Config) -> Path:
@@ -240,6 +218,7 @@ def run_figures(cfg: Config) -> Path:
 
 STAGES = {
     "data": run_data,
+    "check": run_check,
     "backtest": run_backtest,
     "evaluate": run_evaluate,
     "figures": run_figures,
@@ -247,5 +226,5 @@ STAGES = {
 
 
 def run_all(cfg: Config) -> None:
-    for stage in STAGES.values():
-        stage(cfg)
+    for name in ("data", "backtest", "evaluate", "figures"):  # data includes the check
+        STAGES[name](cfg)

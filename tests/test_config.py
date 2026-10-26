@@ -22,11 +22,17 @@ def test_main_config_matches_plan():
     assert regions.count("onshore") == 12 and regions.count("offshore") == 7
     assert cfg.points["thor"].region == "offshore"
     assert cfg.market.portfolio_mw == 100.0
+    assert cfg.data.start == dt.date(2024, 3, 14) and not cfg.data.offline
+    assert cfg.nwp.model == "ecmwf_ifs" and cfg.nwp.variables[:2] == (
+        "wind_speed_100m",
+        "wind_direction_100m",
+    )
 
 
 def test_smoke_config_inherits_and_overrides():
     base, smoke = load_config(CONFIG), load_config(SMOKE)
-    assert smoke.paths.raw == Path("data/sample/dk1_synthetic.csv")
+    assert smoke.paths.raw == Path("data/sample/raw")
+    assert smoke.data.offline
     assert smoke.model.climatology.window_days == 5
     assert smoke.quantiles == base.quantiles
     assert smoke.points == base.points
@@ -47,7 +53,7 @@ def _write(tmp_path: Path, extra: str) -> Path:
         ("[dates]\ntest_start = 2023-01-01", "train_start <= validation_start"),
         ("[dates]\nstress_end = 2026-01-01", "stress_start <= stress_end"),
         ('[issue]\ntime_local = "13:00"', "precede gate closure"),
-        ('[issue]\ntime_local = "09:00"', "available by the issue time"),
+        ('[issue]\ntime_local = "08:00"', "available by the issue time"),
         ("[nwp]\nmax_lead_h = 40", "max_lead_h"),
         ("[market]\nend = 2026-06-30", "inside the test period"),
         ('[adaptivity]\nregimes = ["frozen", "magic"]', "regimes"),
@@ -56,6 +62,8 @@ def _write(tmp_path: Path, extra: str) -> Path:
         ("[model.rls]\nforgetting = 1.5", "forgetting"),
         ("[points.onshore]\nbad = [95.0, 8.0]", "valid lat/lon"),
         ('[market]\npricing = "dual"', "single pricing"),
+        ("[data]\nstart = 2024-05-01", "must precede"),
+        ("[data.openmeteo]\ncalls_per_hour = 20000", "budgets"),
         ("[model.rls]\ntypo = 1", "unexpected or missing keys"),
     ],
 )

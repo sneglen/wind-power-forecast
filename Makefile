@@ -2,7 +2,7 @@
 CONFIG ?= config.toml
 RUN := uv run wpforecast
 
-.PHONY: help install data backtest evaluate figures all smoke sample lint test ci-watch clean
+.PHONY: help install data check backtest evaluate figures all smoke sample lint test ci-watch clean
 
 help:  ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -11,8 +11,11 @@ install:  ## Create the locked environment and install git hooks
 	uv sync --locked
 	uv run pre-commit install
 
-data:  ## Load and validate raw data -> interim dataset
+data:  ## Download (cached, resumable), build interim tables, write data check
 	$(RUN) data --config $(CONFIG)
+
+check:  ## Re-run the data check report on the interim tables
+	$(RUN) check --config $(CONFIG)
 
 backtest:  ## Issue day-ahead forecasts over [dates]
 	$(RUN) backtest --config $(CONFIG)
@@ -29,8 +32,9 @@ all:  ## Run data -> backtest -> evaluate -> figures
 smoke:  ## Full pipeline on the committed synthetic sample
 	$(MAKE) all CONFIG=data/sample/smoke.toml
 
-sample:  ## Regenerate the committed synthetic sample
-	uv run python scripts/make_synthetic_sample.py --config $(CONFIG)
+sample:  ## Re-download the committed smoke sample (real DK1 slice, needs network)
+	rm -rf data/sample/raw
+	$(RUN) data --config data/sample/smoke.toml --online
 
 lint:  ## Run all pre-commit hooks on every file
 	uv run pre-commit run --all-files

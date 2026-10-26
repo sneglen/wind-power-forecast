@@ -22,6 +22,7 @@ def cfg(tmp_path) -> Config:
         interim=tmp_path / "interim",
         outputs=tmp_path / "outputs",
         figures=tmp_path / "figures",
+        reports=tmp_path / "reports",
     )
     return dataclasses.replace(base, paths=paths)
 
@@ -64,14 +65,6 @@ def test_last_day_defaults_to_data_end(cfg):
     assert pipeline._last_day(open_ended, index[:-2]) == dt.date(2025, 1, 20)
 
 
-def test_committed_sample_matches_generator(cfg):
-    from scripts.make_synthetic_sample import make_sample
-
-    committed = pd.read_csv(cfg.paths.raw)
-    regenerated = make_sample(list(cfg.points))
-    pd.testing.assert_frame_equal(committed, regenerated, check_exact=False, atol=0.01)
-
-
 @pytest.mark.smoke
 def test_pipeline_end_to_end(cfg):
     pipeline.run_all(cfg)
@@ -82,6 +75,8 @@ def test_pipeline_end_to_end(cfg):
     assert set(fc["period"]) == {"train", "validation", "test", "stress"}
     assert (fc["issue_time_utc"] < fc["time_utc"]).all()
     assert fc["horizon_h"].between(14, 37).all()
+    dst_day = fc[fc["target_day"].astype(str) == "2025-03-30"]
+    assert len(dst_day) == 23 and dst_day["horizon_h"].max() == 36
     q = fc[[pipeline.qcol(x) for x in cfg.quantiles.levels]].to_numpy()
     assert (q[:, 1:] >= q[:, :-1]).all(), "quantiles must not cross"
 
@@ -94,13 +89,14 @@ def test_pipeline_end_to_end(cfg):
 
 def _forecast_after_corrupting(cfg: Config, since: pd.Timestamp) -> pd.DataFrame:
     path = cfg.paths.interim / pipeline.DATASET
-    data = pd.read_parquet(path)
-    data.loc[data.index >= since, "power_norm"] = 1.0
-    data.to_parquet(path)
+    clean = pd.read_parquet(path)
+    corrupted = clean.copy()
+    corrupted.loc[corrupted.index >= since, "power_norm"] = 1.0
+    corrupted.to_parquet(path)
     pipeline.run_backtest(cfg)
+    clean.to_parquet(path)
     fc = pd.read_parquet(cfg.paths.outputs / pipeline.FORECASTS)
     fc["target_day"] = pd.to_datetime(fc["target_day"]).dt.date
-    pipeline.run_data(cfg)  # restore the clean dataset
     return fc
 
 
@@ -111,7 +107,7 @@ def test_information_set_at_issue_time(cfg):
     clean = pd.read_parquet(cfg.paths.outputs / pipeline.FORECASTS)
     clean["target_day"] = pd.to_datetime(clean["target_day"]).dt.date
 
-    day = dt.date(2025, 1, 15)
+    day = dt.date(2025, 3, 22)
     issue = pipeline.issue_time_utc(cfg, day)
     cols = [pipeline.qcol(x) for x in cfg.quantiles.levels]
     on_day = clean["target_day"] == day
