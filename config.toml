@@ -9,52 +9,116 @@ outputs = "outputs"
 figures = "figures"
 
 [dates]
-start = 2024-01-01            # first target day
-train_end = 2024-12-31        # burn-in / hyper-parameter selection ends here
-test_start = 2025-01-01       # out-of-sample evaluation starts here
-end = 2026-09-30              # last target day
+# Target days (local). The last 3 months of training are the validation set.
+train_start = 2024-04-01      # HRES 00 UTC runs complete from here
+validation_start = 2024-12-01
+train_end = 2025-02-28
+test_start = 2025-03-01       # pre-Thor test year with full imbalance-price coverage
+test_end = 2026-02-28
+stress_start = 2026-03-01     # Thor ramp-up, IFS cycle 50r1
+# stress_end = 2026-09-30     # omit: run to the latest day in the data
 
 [issue]
-# Day-ahead discipline: forecasts for local day D+1 are issued on day D at `time_local`,
-# using only information available at that instant (NWP cycle + publication lag, lagged power).
+# Forecasts for local day D are issued on D-1 at `time_local`, from information available then.
+# Horizon k = hours from issue to the END of the target hour, k = 1..max_horizon_h.
+# The day-ahead product (local day D) is k = 14..37, i.e. lead times 13-37 h.
 timezone = "Europe/Copenhagen"
-time_local = "10:00"
-gate_closure_local = "12:00"  # Nord Pool day-ahead auction gate closure
-nwp_cycle_utc = 0             # 00 UTC run
-nwp_availability_lag_h = 7    # placeholder (Step 1): run usable from ~07 UTC
-power_lag_h = 1               # last observed production hour usable at issue time
+time_local = "11:00"
+gate_closure_local = "12:00"  # day-ahead auction gate closure
+max_horizon_h = 38            # plan: 1-37; +1 covers the 25-hour autumn DST day
+power_lag_h = 0               # production known up to the issue time (real-time metering)
 
-[points]
-# NWP extraction points over DK1 (lat, lon). Placeholder selection (Step 1).
-jutland_north = [57.05, 9.00]
-jutland_west = [56.20, 8.35]
-jutland_south = [55.15, 9.00]
-funen = [55.35, 10.35]
-horns_rev = [55.55, 7.85]
-thor = [56.35, 7.65]          # Thor offshore wind farm (regime-change extension)
+[nwp]
+# Core input: ECMWF IFS HRES 9 km via Open-Meteo Single Runs API.
+source = "open-meteo"
+cycle_utc = 0
+availability_lag_h = 9        # placeholder (Step 1): verify the run is out before 09:00 UTC
+max_lead_h = 72
+height_m = 100                # wind speed and direction at 100 m
+
+[nwp.ensemble]
+# Extension A (Step 8): ECMWF IFS ENS via dynamical.org (dynamical-catalog).
+source = "dynamical.org"
+members = 51
+resolution_deg = 0.25
+step_h = 3                    # interpolated to hourly
+
+# NWP extraction points (lat, lon). Approximate; verified against a land/sea mask in Step 1.
+[points.onshore]              # ~0.5 deg grid over Jutland and Funen
+on_5750_1000 = [57.50, 10.00]
+on_5700_0850 = [57.00, 8.50]
+on_5700_0950 = [57.00, 9.50]
+on_5650_0850 = [56.50, 8.50]
+on_5650_0900 = [56.50, 9.00]
+on_5650_1000 = [56.50, 10.00]
+on_5600_0850 = [56.00, 8.50]
+on_5600_0900 = [56.00, 9.00]
+on_5550_0850 = [55.50, 8.50]
+on_5550_0950 = [55.50, 9.50]
+on_5550_1000 = [55.50, 10.00]
+on_5500_0900 = [55.00, 9.00]
+
+[points.offshore]
+horns_rev_1 = [55.53, 7.91]
+horns_rev_2 = [55.60, 7.58]
+horns_rev_3 = [55.70, 7.68]
+vesterhav_nord = [56.55, 8.05]
+vesterhav_syd = [56.00, 8.00]
+anholt = [56.60, 11.21]
+thor = [56.35, 7.70]          # regime-change extension (Step 9)
+
+[target]
+# DK1 onshore + offshore production / installed capacity C(t), modelled as one total.
+resolution = "1h"             # one hourly bid repeated over four 15-min MTUs
+
+[curtailment]
+# Hours with day-ahead price <= threshold are flagged, dropped from fitting and scored both ways.
+# DA prices are published after issue time, so they are never a feature.
+da_price_max = 0.0
 
 [quantiles]
 levels = [
     0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
     0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95,
 ]
+crps_levels = 99              # CRPS approximated from tau = 0.01 .. 0.99
+
+[adaptivity]
+regimes = ["frozen", "walk_forward", "recursive"]
+walk_forward_refit = "monthly"
 
 [model.climatology]
-window_days = 28              # benchmark: rolling empirical quantiles of past production
+window_days = 28              # Step 0 benchmark: rolling empirical quantiles of past production
 
 [model.rls]
-forgetting = 0.995            # placeholder, tuned later: lambda, effective memory 1/(1-lambda)
+forgetting = 0.995            # placeholder: lambda tuned on validation; memory ~ 1/(1-lambda)
 delta = 100.0                 # initial covariance P0 = delta * I
+spline_knots = 6              # placeholder: B-spline basis of regional 100 m wind speed
+diurnal_harmonics = 2         # placeholder
 
-[model.adaptive_quantile]
-forgetting = 0.995            # placeholder, tuned later
-spline_knots = 5              # placeholder, tuned later
+[model.quantreg]
+window_days = 180             # rolling window
+refit_days = 7                # weekly refit
+spline_knots = 5              # placeholder
 
-[model.bounded]
-nu = 1.0                      # placeholder, tuned later: generalised-logit shape
+[model.logitnormal]
+nu = 1.0                      # placeholder: generalised-logit shape
 epsilon = 0.001               # clip normalised power to [eps, 1 - eps] before transform
+forgetting = 0.995            # placeholder: recursive-likelihood variant (optional)
+
+[model.gbm]
+learning_rate = 0.05          # placeholder
+num_leaves = 31               # placeholder
+n_estimators = 500            # placeholder
+
+[evaluation]
+bootstrap_block_days = 1      # day-block bootstrap for consistency bands
+n_bootstrap = 1000
 
 [market]
 area = "DK1"
 pricing = "single"            # single imbalance price
-capacity_normalise = true     # report imbalance cost per MW installed
+portfolio_mw = 100.0          # price-taker portfolio producing y * 100 MW
+start = 2025-03-19            # one imbalance-price method throughout
+end = 2026-02-28
+tau_lookback_days = 60        # walk-forward choice of the bid quantile

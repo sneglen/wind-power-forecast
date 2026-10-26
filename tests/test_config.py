@@ -1,3 +1,4 @@
+import datetime as dt
 from pathlib import Path
 
 import pytest
@@ -9,12 +10,18 @@ CONFIG = ROOT / "config.toml"
 SMOKE = ROOT / "data" / "sample" / "smoke.toml"
 
 
-def test_main_config_loads():
+def test_main_config_matches_plan():
     cfg = load_config(CONFIG)
-    assert cfg.quantiles[0] == 0.05 and cfg.quantiles[-1] == 0.95
-    assert len(cfg.quantiles) == 19
-    assert "thor" in cfg.points
-    assert cfg.dates.start.year == 2024
+    q = cfg.quantiles.levels
+    assert (q[0], q[-1], len(q), cfg.quantiles.crps_levels) == (0.05, 0.95, 19, 99)
+    assert cfg.issue.time_local == dt.time(11, 0) and cfg.issue.power_lag_h == 0
+    assert cfg.dates.train_start == dt.date(2024, 4, 1)
+    assert (cfg.dates.test_start, cfg.dates.test_end) == (dt.date(2025, 3, 1), dt.date(2026, 2, 28))
+    assert cfg.dates.stress_end is None
+    regions = [p.region for p in cfg.points.values()]
+    assert regions.count("onshore") == 12 and regions.count("offshore") == 7
+    assert cfg.points["thor"].region == "offshore"
+    assert cfg.market.portfolio_mw == 100.0
 
 
 def test_smoke_config_inherits_and_overrides():
@@ -22,6 +29,7 @@ def test_smoke_config_inherits_and_overrides():
     assert smoke.paths.raw == Path("data/sample/dk1_synthetic.csv")
     assert smoke.model.climatology.window_days == 5
     assert smoke.quantiles == base.quantiles
+    assert smoke.points == base.points
     assert smoke.model.rls == base.model.rls
 
 
@@ -36,11 +44,17 @@ def _write(tmp_path: Path, extra: str) -> Path:
     [
         ("[quantiles]\nlevels = [0.5, 0.1]", "increasing"),
         ("[quantiles]\nlevels = [0.0, 0.5]", "strictly inside"),
-        ("[dates]\ntest_start = 2023-01-01", "start <= train_end"),
-        ('[issue]\ntime_local = "13:00"', "gate_closure"),
+        ("[dates]\ntest_start = 2023-01-01", "train_start <= validation_start"),
+        ("[dates]\nstress_end = 2026-01-01", "stress_start <= stress_end"),
+        ('[issue]\ntime_local = "13:00"', "precede gate closure"),
+        ('[issue]\ntime_local = "09:00"', "available by the issue time"),
+        ("[nwp]\nmax_lead_h = 40", "max_lead_h"),
+        ("[market]\nend = 2026-06-30", "inside the test period"),
+        ('[adaptivity]\nregimes = ["frozen", "magic"]', "regimes"),
+        ("[points.offshore]\non_5500_0900 = [55.0, 8.0]", "duplicate"),
         ('[issue]\ntimezone = "Mars/Olympus"', "unknown timezone"),
         ("[model.rls]\nforgetting = 1.5", "forgetting"),
-        ("[points]\nbad = [95.0, 8.0]", "valid lat/lon"),
+        ("[points.onshore]\nbad = [95.0, 8.0]", "valid lat/lon"),
         ('[market]\npricing = "dual"', "single pricing"),
         ("[model.rls]\ntypo = 1", "unexpected or missing keys"),
     ],

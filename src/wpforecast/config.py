@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+REGIMES = ("frozen", "walk_forward", "recursive")
+
 
 @dataclass(frozen=True)
 class Paths:
@@ -25,10 +27,13 @@ class Paths:
 
 @dataclass(frozen=True)
 class Dates:
-    start: dt.date
+    train_start: dt.date
+    validation_start: dt.date
     train_end: dt.date
     test_start: dt.date
-    end: dt.date
+    test_end: dt.date
+    stress_start: dt.date
+    stress_end: dt.date | None = None  # None: up to the latest day in the data
 
 
 @dataclass(frozen=True)
@@ -36,13 +41,59 @@ class Issue:
     timezone: str
     time_local: dt.time
     gate_closure_local: dt.time
-    nwp_cycle_utc: int
-    nwp_availability_lag_h: int
+    max_horizon_h: int
     power_lag_h: int
 
     @property
     def tz(self) -> ZoneInfo:
         return ZoneInfo(self.timezone)
+
+
+@dataclass(frozen=True)
+class Ensemble:
+    source: str
+    members: int
+    resolution_deg: float
+    step_h: int
+
+
+@dataclass(frozen=True)
+class NWP:
+    source: str
+    cycle_utc: int
+    availability_lag_h: int
+    max_lead_h: int
+    height_m: int
+    ensemble: Ensemble
+
+
+@dataclass(frozen=True)
+class Point:
+    lat: float
+    lon: float
+    region: str  # "onshore" | "offshore"
+
+
+@dataclass(frozen=True)
+class Target:
+    resolution: str
+
+
+@dataclass(frozen=True)
+class Curtailment:
+    da_price_max: float
+
+
+@dataclass(frozen=True)
+class Quantiles:
+    levels: tuple[float, ...]
+    crps_levels: int
+
+
+@dataclass(frozen=True)
+class Adaptivity:
+    regimes: tuple[str, ...]
+    walk_forward_refit: str
 
 
 @dataclass(frozen=True)
@@ -54,33 +105,54 @@ class Climatology:
 class RLS:
     forgetting: float
     delta: float
+    spline_knots: int
+    diurnal_harmonics: int
 
 
 @dataclass(frozen=True)
-class AdaptiveQuantile:
-    forgetting: float
+class QuantReg:
+    window_days: int
+    refit_days: int
     spline_knots: int
 
 
 @dataclass(frozen=True)
-class Bounded:
+class LogitNormal:
     nu: float
     epsilon: float
+    forgetting: float
+
+
+@dataclass(frozen=True)
+class GBM:
+    learning_rate: float
+    num_leaves: int
+    n_estimators: int
 
 
 @dataclass(frozen=True)
 class Model:
     climatology: Climatology
     rls: RLS
-    adaptive_quantile: AdaptiveQuantile
-    bounded: Bounded
+    quantreg: QuantReg
+    logitnormal: LogitNormal
+    gbm: GBM
+
+
+@dataclass(frozen=True)
+class Evaluation:
+    bootstrap_block_days: int
+    n_bootstrap: int
 
 
 @dataclass(frozen=True)
 class Market:
     area: str
     pricing: str
-    capacity_normalise: bool
+    portfolio_mw: float
+    start: dt.date
+    end: dt.date
+    tau_lookback_days: int
 
 
 @dataclass(frozen=True)
@@ -88,9 +160,14 @@ class Config:
     paths: Paths
     dates: Dates
     issue: Issue
-    points: dict[str, tuple[float, float]]
-    quantiles: tuple[float, ...]
+    nwp: NWP
+    points: dict[str, Point]
+    target: Target
+    curtailment: Curtailment
+    quantiles: Quantiles
+    adaptivity: Adaptivity
     model: Model
+    evaluation: Evaluation
     market: Market
 
 
@@ -113,6 +190,23 @@ def _read(path: Path) -> dict[str, Any]:
     return _merge(_read((path.parent / base).resolve()), raw)
 
 
+def _table(raw: dict[str, Any], dotted: str) -> dict[str, Any]:
+    table = raw
+    for key in dotted.split("."):
+        if not isinstance(table.get(key), dict):
+            raise ValueError(f"config is missing table [{dotted}]")
+        table = table[key]
+    return table
+
+
+def _build[T](cls: type[T], raw: dict[str, Any], dotted: str, /, **override: Any) -> T:
+    table = {k: v for k, v in _table(raw, dotted).items() if not isinstance(v, dict)}
+    try:
+        return cls(**(table | override))
+    except TypeError as exc:
+        raise ValueError(f"[{dotted}] has unexpected or missing keys: {exc}") from exc
+
+
 def _parse_time(value: str, key: str) -> dt.time:
     try:
         return dt.time.fromisoformat(value)
@@ -120,84 +214,141 @@ def _parse_time(value: str, key: str) -> dt.time:
         raise ValueError(f"[issue] {key} must be HH:MM, got {value!r}") from exc
 
 
+def _parse_points(raw: dict[str, Any]) -> dict[str, Point]:
+    points: dict[str, Point] = {}
+    for region in ("onshore", "offshore"):
+        for name, latlon in _table(raw, f"points.{region}").items():
+            if name in points:
+                raise ValueError(f"[points] duplicate point name {name!r}")
+            points[name] = Point(float(latlon[0]), float(latlon[1]), region)
+    return points
+
+
 def _check(cond: bool, msg: str) -> None:
     if not cond:
         raise ValueError(msg)
 
 
+def _issue_hours_utc(issue: Issue) -> list[float]:
+    """Issue time in UTC hours of day, in winter and in summer."""
+    hours = []
+    for day in (dt.date(2025, 1, 15), dt.date(2025, 7, 15)):
+        local = dt.datetime.combine(day, issue.time_local, tzinfo=issue.tz)
+        utc = local.astimezone(dt.UTC)
+        hours.append(utc.hour + utc.minute / 60)
+    return hours
+
+
 def _validate(cfg: Config) -> None:
     d = cfg.dates
     _check(
-        d.start <= d.train_end < d.test_start <= d.end,
-        "[dates] must satisfy start <= train_end < test_start <= end",
+        d.train_start
+        <= d.validation_start
+        <= d.train_end
+        < d.test_start
+        <= d.test_end
+        < d.stress_start
+        <= (d.stress_end or d.stress_start),
+        "[dates] must satisfy train_start <= validation_start <= train_end < test_start"
+        " <= test_end < stress_start <= stress_end",
     )
 
+    issue = cfg.issue
     try:
-        cfg.issue.tz  # noqa: B018 — resolve the zone to validate it
+        issue.tz  # noqa: B018 — resolve the zone to validate it
     except ZoneInfoNotFoundError as exc:
-        raise ValueError(f"[issue] unknown timezone {cfg.issue.timezone!r}") from exc
+        raise ValueError(f"[issue] unknown timezone {issue.timezone!r}") from exc
+    _check(issue.time_local < issue.gate_closure_local, "[issue] must precede gate closure")
+    _check(issue.max_horizon_h >= 1, "[issue] max_horizon_h must be >= 1")
+    _check(issue.power_lag_h >= 0, "[issue] power_lag_h must be >= 0")
+
+    nwp = cfg.nwp
+    _check(0 <= nwp.cycle_utc < 24, "[nwp] cycle_utc must be in 0..23")
+    hours = _issue_hours_utc(issue)
     _check(
-        cfg.issue.time_local < cfg.issue.gate_closure_local,
-        "[issue] time_local must precede gate_closure_local",
+        nwp.cycle_utc + nwp.availability_lag_h <= min(hours),
+        "[nwp] the run must be available by the issue time (summer and winter)",
     )
-    _check(0 <= cfg.issue.nwp_cycle_utc < 24, "[issue] nwp_cycle_utc must be in 0..23")
-    _check(cfg.issue.nwp_availability_lag_h >= 0, "[issue] nwp_availability_lag_h must be >= 0")
-    _check(cfg.issue.power_lag_h >= 0, "[issue] power_lag_h must be >= 0")
+    _check(
+        max(hours) - nwp.cycle_utc + issue.max_horizon_h <= nwp.max_lead_h,
+        "[nwp] max_lead_h does not cover max_horizon_h",
+    )
 
-    _check(len(cfg.points) > 0, "[points] needs at least one point")
-    for name, (lat, lon) in cfg.points.items():
-        _check(-90 <= lat <= 90 and -180 <= lon <= 180, f"[points] {name} is not a valid lat/lon")
+    _check(any(p.region == "onshore" for p in cfg.points.values()), "[points] need onshore points")
+    for name, p in cfg.points.items():
+        _check(
+            -90 <= p.lat <= 90 and -180 <= p.lon <= 180, f"[points] {name} is not a valid lat/lon"
+        )
 
-    q = cfg.quantiles
+    q = cfg.quantiles.levels
     _check(len(q) > 0, "[quantiles] levels must not be empty")
     _check(all(0 < x < 1 for x in q), "[quantiles] levels must lie strictly inside (0, 1)")
     _check(all(a < b for a, b in zip(q, q[1:], strict=False)), "[quantiles] must be increasing")
+    _check(cfg.quantiles.crps_levels >= 2, "[quantiles] crps_levels must be >= 2")
+
+    _check(
+        set(cfg.adaptivity.regimes) <= set(REGIMES), f"[adaptivity] regimes must be in {REGIMES}"
+    )
 
     m = cfg.model
     _check(m.climatology.window_days >= 1, "[model.climatology] window_days must be >= 1")
-    for name, lam in (
-        ("rls", m.rls.forgetting),
-        ("adaptive_quantile", m.adaptive_quantile.forgetting),
-    ):
+    for name, lam in (("rls", m.rls.forgetting), ("logitnormal", m.logitnormal.forgetting)):
         _check(0 < lam <= 1, f"[model.{name}] forgetting must be in (0, 1]")
     _check(m.rls.delta > 0, "[model.rls] delta must be > 0")
-    _check(m.adaptive_quantile.spline_knots >= 2, "[model.adaptive_quantile] spline_knots >= 2")
-    _check(m.bounded.nu > 0, "[model.bounded] nu must be > 0")
-    _check(0 < m.bounded.epsilon < 0.5, "[model.bounded] epsilon must be in (0, 0.5)")
+    _check(m.quantreg.refit_days <= m.quantreg.window_days, "[model.quantreg] refit > window")
+    _check(m.logitnormal.nu > 0, "[model.logitnormal] nu must be > 0")
+    _check(0 < m.logitnormal.epsilon < 0.5, "[model.logitnormal] epsilon must be in (0, 0.5)")
 
-    _check(cfg.market.pricing == "single", "[market] only single pricing is supported")
+    mk = cfg.market
+    _check(mk.pricing == "single", "[market] only single pricing is supported")
+    _check(mk.portfolio_mw > 0, "[market] portfolio_mw must be > 0")
+    _check(
+        d.test_start <= mk.start <= mk.end <= d.test_end,
+        "[market] window must lie inside the test period",
+    )
 
 
 def load_config(path: str | Path) -> Config:
     """Load, merge (via ``base``) and validate a config file."""
     raw = _read(Path(path).resolve())
-    try:
-        issue = raw["issue"]
-        model = raw["model"]
-        cfg = Config(
-            paths=Paths(**{k: Path(v) for k, v in raw["paths"].items()}),
-            dates=Dates(**raw["dates"]),
-            issue=Issue(
-                timezone=issue["timezone"],
-                time_local=_parse_time(issue["time_local"], "time_local"),
-                gate_closure_local=_parse_time(issue["gate_closure_local"], "gate_closure_local"),
-                nwp_cycle_utc=issue["nwp_cycle_utc"],
-                nwp_availability_lag_h=issue["nwp_availability_lag_h"],
-                power_lag_h=issue["power_lag_h"],
+    issue = _table(raw, "issue")
+    cfg = Config(
+        paths=_build(Paths, raw, "paths", **{k: Path(v) for k, v in _table(raw, "paths").items()}),
+        dates=_build(Dates, raw, "dates"),
+        issue=_build(
+            Issue,
+            raw,
+            "issue",
+            time_local=_parse_time(issue.get("time_local", ""), "time_local"),
+            gate_closure_local=_parse_time(
+                issue.get("gate_closure_local", ""), "gate_closure_local"
             ),
-            points={name: (float(ll[0]), float(ll[1])) for name, ll in raw["points"].items()},
-            quantiles=tuple(float(x) for x in raw["quantiles"]["levels"]),
-            model=Model(
-                climatology=Climatology(**model["climatology"]),
-                rls=RLS(**model["rls"]),
-                adaptive_quantile=AdaptiveQuantile(**model["adaptive_quantile"]),
-                bounded=Bounded(**model["bounded"]),
-            ),
-            market=Market(**raw["market"]),
-        )
-    except KeyError as exc:
-        raise ValueError(f"config {path} is missing key {exc}") from exc
-    except TypeError as exc:
-        raise ValueError(f"config {path} has unexpected or missing keys: {exc}") from exc
+        ),
+        nwp=_build(NWP, raw, "nwp", ensemble=_build(Ensemble, raw, "nwp.ensemble")),
+        points=_parse_points(raw),
+        target=_build(Target, raw, "target"),
+        curtailment=_build(Curtailment, raw, "curtailment"),
+        quantiles=_build(
+            Quantiles,
+            raw,
+            "quantiles",
+            levels=tuple(float(x) for x in _table(raw, "quantiles").get("levels", [])),
+        ),
+        adaptivity=_build(
+            Adaptivity,
+            raw,
+            "adaptivity",
+            regimes=tuple(_table(raw, "adaptivity").get("regimes", [])),
+        ),
+        model=Model(
+            climatology=_build(Climatology, raw, "model.climatology"),
+            rls=_build(RLS, raw, "model.rls"),
+            quantreg=_build(QuantReg, raw, "model.quantreg"),
+            logitnormal=_build(LogitNormal, raw, "model.logitnormal"),
+            gbm=_build(GBM, raw, "model.gbm"),
+        ),
+        evaluation=_build(Evaluation, raw, "evaluation"),
+        market=_build(Market, raw, "market"),
+    )
     _validate(cfg)
     return cfg

@@ -7,8 +7,8 @@ what was rejected. Newest entries at the bottom; superseded entries are marked, 
 
 ### D-001 · 2026-10-26 · Python 3.12, pinned
 **Decision:** `requires-python = ">=3.12,<3.13"`, `.python-version = 3.12`.
-**Why:** `dynamical-catalog` (NWP access, Step 1) needs ≥ 3.12; an upper bound keeps CI and
-local runs on the same minor version.
+**Why:** `dynamical-catalog` (ECMWF ENS access, Step 8) needs ≥ 3.12; an upper bound keeps CI
+and local runs on the same minor version.
 **Rejected:** 3.13/3.14, because the scientific stack lags new minors and gains nothing here.
 
 ### D-002 · 2026-10-26 · uv + committed `uv.lock`
@@ -37,7 +37,7 @@ override only what changes.
 time rather than mid-run.
 **Rejected:** Hydra/pydantic-settings (more power than needed); duplicated configs (drift).
 
-### D-006 · 2026-10-26 · Time conventions and issue-time discipline
+### D-006 · 2026-10-26 · Time conventions and issue-time discipline — *superseded by D-011, D-012*
 **Decision:** all timestamps UTC, hour-beginning. Forecasts for local day D are issued on
 D−1 at 10:00 Europe/Copenhagen, before the 12:00 day-ahead gate closure, from the 00 UTC NWP
 cycle. A power observation stamped `t` becomes usable at `t + 1h + power_lag_h`. Target days
@@ -68,3 +68,35 @@ machinery without any modelling decisions.
 ### D-010 · 2026-10-26 · MIT licence, English
 **Decision:** MIT licence, all docs and code in English.
 **Why:** permissive and standard for a public portfolio project.
+
+### D-011 · 2026-10-26 · Config aligned with the project plan's key decisions
+**Decision:**
+- **Issue time** 11:00 Europe/Copenhagen on D−1, before the 12:00 gate closure. Production is
+  known up to the issue time (real-time metering, `power_lag_h = 0`).
+- **Periods** (target days): train 2024-04-01 → 2025-02-28, of which the last three months
+  (from 2024-12-01) are validation; test 2025-03-01 → 2026-02-28; stress 2026-03-01 → latest.
+- **NWP:** ECMWF IFS HRES 9 km, 00 UTC runs, 100 m wind via the Open-Meteo Single Runs API;
+  ECMWF IFS ENS (51 members, 0.25°) via dynamical.org only for Extension A.
+- **Points:** 12 onshore on a 0.5° grid over Jutland and Funen, plus Horns Rev 1–3, Vesterhav
+  Nord/Syd, Anholt and Thor (19 in total, approximate; checked against a land/sea mask in Step 1).
+- **Target:** DK1 onshore + offshore production ÷ installed capacity, one total, hourly.
+- **Curtailment:** hours with day-ahead price ≤ 0 are flagged, dropped from fitting and scored
+  with and without. DA prices are published after issue, so never a feature.
+- **Scoring:** pinball on the 19-level grid; CRPS from 99 quantiles.
+- **Adaptivity:** three regimes compared — frozen, monthly walk-forward refit, daily recursive.
+- **Market:** DK1 single price, 100 MW price-taker, window 2025-03-19 → 2026-02-28 (one
+  imbalance-price method).
+
+**Why:** the Step 0 skeleton was first built from the Step 0 brief alone; these values come
+from the project plan so every later step reads them from one place. Hyper-parameters remain
+placeholders until their step tunes them on the validation set.
+
+### D-012 · 2026-10-26 · Horizon convention
+**Decision:** timestamps are hour-beginning; horizon k is the number of hours from the issue
+time to the END of the target hour, so k = 1 is the first hour after issue. The day-ahead
+product (local day D) is k = 14–37, i.e. lead times 13–37 h; DST days give 14–36 (spring) and
+14–38 (autumn). `max_horizon_h = 38`: the plan's 1–37 plus one hour for the autumn DST day.
+**Why:** matches the WPPT-style notation p̂(t+k | t) for an hourly mean ending at t+k, and makes
+the DST edge case explicit rather than silently truncated.
+**Rejected:** k counted to the start of the hour (product k = 13–36), which loses the plan's
+1–37 range.

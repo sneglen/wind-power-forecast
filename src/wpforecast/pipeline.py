@@ -7,6 +7,8 @@ stage interfaces.
 Conventions: timestamps are UTC, hour-beginning. Power is capacity-normalised to [0, 1].
 An observation stamped ``t`` covers ``[t, t + 1h)`` and becomes usable at
 ``t + 1h + power_lag_h``; it may enter a forecast only if that instant is <= the issue time.
+Horizon ``k`` = hours from the issue time to the END of the target hour, so k = 1 is the
+first hour after issue and the day-ahead product (local day D) is k = 14..37.
 """
 
 from __future__ import annotations
@@ -47,6 +49,31 @@ def target_hours_utc(cfg: Config, target_day: dt.date) -> pd.DatetimeIndex:
     return pd.date_range(start, end, freq="h", inclusive="left").tz_convert("UTC")
 
 
+def horizons(issue: pd.Timestamp, targets: pd.DatetimeIndex) -> np.ndarray:
+    """Horizon k (hours, to the end of each hour-beginning target stamp)."""
+    return ((targets - issue) / pd.Timedelta(hours=1)).to_numpy() + 1
+
+
+def period(cfg: Config, day: dt.date) -> str:
+    """Which evaluation period a target day belongs to."""
+    d = cfg.dates
+    if day < d.validation_start:
+        return "train"
+    if day <= d.train_end:
+        return "validation"
+    if day <= d.test_end:
+        return "test"
+    return "stress"
+
+
+def _last_day(cfg: Config, index: pd.DatetimeIndex) -> dt.date:
+    """Last target day: stress_end if set, else the last local day fully covered by data."""
+    if cfg.dates.stress_end is not None:
+        return cfg.dates.stress_end
+    day = index[-1].tz_convert(cfg.issue.tz).date()
+    return day if target_hours_utc(cfg, day)[-1] <= index[-1] else day - dt.timedelta(days=1)
+
+
 def _require(path: Path, hint: str) -> Path:
     if not path.exists():
         raise FileNotFoundError(f"{path} not found. {hint}")
@@ -78,8 +105,8 @@ def run_data(cfg: Config) -> Path:
     df["power_norm"] = (df["power_mw"] / df["capacity_mw"]).clip(0.0, 1.0)
 
     lookback = dt.timedelta(days=cfg.model.climatology.window_days + 2)
-    lo = issue_time_utc(cfg, cfg.dates.start) - lookback
-    hi = target_hours_utc(cfg, cfg.dates.end)[-1]
+    lo = issue_time_utc(cfg, cfg.dates.train_start) - lookback
+    hi = target_hours_utc(cfg, cfg.dates.stress_end)[-1] if cfg.dates.stress_end else None
     df = df.loc[lo:hi, required[1:] + ["power_norm"]]
 
     out = cfg.paths.interim / DATASET
@@ -99,12 +126,16 @@ def run_backtest(cfg: Config) -> Path:
     power = df["power_norm"]
     usable_at = power.index + pd.Timedelta(hours=1 + cfg.issue.power_lag_h)
     window = pd.Timedelta(days=cfg.model.climatology.window_days)
-    levels = np.asarray(cfg.quantiles)
+    levels = np.asarray(cfg.quantiles.levels)
 
     frames = []
-    for day in pd.date_range(cfg.dates.start, cfg.dates.end, freq="D").date:
+    last = _last_day(cfg, power.index)
+    for day in pd.date_range(cfg.dates.train_start, last, freq="D").date:
         issue = issue_time_utc(cfg, day)
         targets = target_hours_utc(cfg, day)
+        k = horizons(issue, targets)
+        if k.max() > cfg.issue.max_horizon_h:
+            raise ValueError(f"target day {day} needs k = {k.max():g} > max_horizon_h")
         history = power[(usable_at <= issue) & (power.index >= issue - window)].dropna()
         if len(history) < 24:
             log.warning("backtest: skipping %s, only %d usable hours", day, len(history))
@@ -116,9 +147,10 @@ def run_backtest(cfg: Config) -> Path:
         frame = pd.DataFrame(
             {
                 "target_day": day,
+                "period": period(cfg, day),
                 "issue_time_utc": issue,
                 "time_utc": targets,
-                "lead_h": (targets - issue) / pd.Timedelta(hours=1),
+                "horizon_h": k,
                 "observed": power.reindex(targets).to_numpy(),
             }
         )
@@ -144,9 +176,9 @@ def pinball(y: np.ndarray, f: np.ndarray, level: float) -> float:
 
 
 def run_evaluate(cfg: Config) -> Path:
-    """Score out-of-sample forecasts (target day >= test_start): pinball loss and coverage."""
+    """Score the test period: pinball loss and empirical coverage per quantile."""
     fc = pd.read_parquet(_require(cfg.paths.outputs / FORECASTS, "Run `make backtest` first."))
-    fc = fc[(pd.to_datetime(fc["target_day"]).dt.date >= cfg.dates.test_start)]
+    fc = fc[fc["period"] == "test"]
     fc = fc.dropna(subset=["observed"])
     if fc.empty:
         raise ValueError("no out-of-sample forecasts with observations to evaluate")
@@ -158,11 +190,11 @@ def run_evaluate(cfg: Config) -> Path:
             "pinball": pinball(y, fc[qcol(level)].to_numpy(), level),
             "coverage": float(np.mean(y <= fc[qcol(level)].to_numpy())),
         }
-        for level in cfg.quantiles
+        for level in cfg.quantiles.levels
     ]
     metrics = {
         "model": "climatology",
-        "test_start": cfg.dates.test_start.isoformat(),
+        "test_period": [cfg.dates.test_start.isoformat(), cfg.dates.test_end.isoformat()],
         "n_hours": len(fc),
         "mean_pinball": float(np.mean([m["pinball"] for m in per_level])),
         "quantiles": per_level,
