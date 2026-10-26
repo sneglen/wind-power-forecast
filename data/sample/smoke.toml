@@ -1,0 +1,18 @@
+# Smoke-run config: inherits config.toml, points at the committed synthetic sample
+# and shrinks the windows so the full pipeline runs in seconds.
+base = "../../config.toml"
+
+[paths]
+raw = "data/sample/dk1_synthetic.csv"
+interim = "outputs/smoke/interim"
+outputs = "outputs/smoke"
+figures = "outputs/smoke/figures"
+
+[dates]
+start = 2025-01-08
+train_end = 2025-01-12
+test_start = 2025-01-13
+end = 2025-01-20
+
+[model.climatology]
+window_days = 5

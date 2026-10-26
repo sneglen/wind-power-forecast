@@ -1,0 +1,60 @@
+# wind-power-forecast — single source of truth for dates, points, quantiles and hyper-parameters.
+# All timestamps are handled in UTC internally; local time only appears in [issue].
+# Values marked "placeholder" are tuned in the step that introduces the corresponding method.
+
+[paths]
+raw = "data/raw/dk1.csv"      # produced by `make data` (Step 1)
+interim = "data/interim"
+outputs = "outputs"
+figures = "figures"
+
+[dates]
+start = 2024-01-01            # first target day
+train_end = 2024-12-31        # burn-in / hyper-parameter selection ends here
+test_start = 2025-01-01       # out-of-sample evaluation starts here
+end = 2026-09-30              # last target day
+
+[issue]
+# Day-ahead discipline: forecasts for local day D+1 are issued on day D at `time_local`,
+# using only information available at that instant (NWP cycle + publication lag, lagged power).
+timezone = "Europe/Copenhagen"
+time_local = "10:00"
+gate_closure_local = "12:00"  # Nord Pool day-ahead auction gate closure
+nwp_cycle_utc = 0             # 00 UTC run
+nwp_availability_lag_h = 7    # placeholder (Step 1): run usable from ~07 UTC
+power_lag_h = 1               # last observed production hour usable at issue time
+
+[points]
+# NWP extraction points over DK1 (lat, lon). Placeholder selection (Step 1).
+jutland_north = [57.05, 9.00]
+jutland_west = [56.20, 8.35]
+jutland_south = [55.15, 9.00]
+funen = [55.35, 10.35]
+horns_rev = [55.55, 7.85]
+thor = [56.35, 7.65]          # Thor offshore wind farm (regime-change extension)
+
+[quantiles]
+levels = [
+    0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
+    0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95,
+]
+
+[model.climatology]
+window_days = 28              # benchmark: rolling empirical quantiles of past production
+
+[model.rls]
+forgetting = 0.995            # placeholder, tuned later: lambda, effective memory 1/(1-lambda)
+delta = 100.0                 # initial covariance P0 = delta * I
+
+[model.adaptive_quantile]
+forgetting = 0.995            # placeholder, tuned later
+spline_knots = 5              # placeholder, tuned later
+
+[model.bounded]
+nu = 1.0                      # placeholder, tuned later: generalised-logit shape
+epsilon = 0.001               # clip normalised power to [eps, 1 - eps] before transform
+
+[market]
+area = "DK1"
+pricing = "single"            # single imbalance price
+capacity_normalise = true     # report imbalance cost per MW installed
