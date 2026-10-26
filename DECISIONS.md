@@ -100,3 +100,11 @@ product (local day D) is k = 14–37, i.e. lead times 13–37 h; DST days give 1
 the DST edge case explicit rather than silently truncated.
 **Rejected:** k counted to the start of the hour (product k = 13–36), which loses the plan's
 1–37 range.
+
+### D-013 · 2026-10-26 · Exact Python patch pin; CI checked after every push
+**Decision:** `.python-version` pins 3.12.15 (`pyproject.toml` still allows 3.12.x). Every push
+is followed by `make ci-watch`, and a step is not finished until its CI run is green.
+**Why:** with only `3.12`, CI used the runner's system Python 3.12.3 while local runs used
+3.12.15; outputs matched, but the environments did not. The CI run appears a few seconds after
+a push, so `ci-watch` polls for the run of the pushed commit before following it.
+**Rejected:** relying on the commit badge (easy to miss a red run), or pinning only in CI.

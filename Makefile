@@ -2,10 +2,10 @@
 CONFIG ?= config.toml
 RUN := uv run wpforecast
 
-.PHONY: help install data backtest evaluate figures all smoke sample lint test clean
+.PHONY: help install data backtest evaluate figures all smoke sample lint test ci-watch clean
 
 help:  ## List targets
-	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
+	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
 
 install:  ## Create the locked environment and install git hooks
 	uv sync --locked
@@ -37,6 +37,9 @@ lint:  ## Run all pre-commit hooks on every file
 
 test:  ## Run the test suite
 	uv run pytest
+
+ci-watch:  ## After `git push`: wait for the CI run of HEAD, fail if any job fails
+	scripts/ci_watch.sh
 
 clean:  ## Remove generated artefacts (keeps data/raw)
 	rm -rf data/interim outputs figures .pytest_cache .ruff_cache

@@ -15,7 +15,7 @@ _Pending._
 
 ## Quick start
 
-Requires Linux, [uv](https://docs.astral.sh/uv/) and `make`. uv installs Python 3.12 itself.
+Requires Linux, [uv](https://docs.astral.sh/uv/) and `make`. uv installs the pinned Python (3.12.15) itself.
 
 ```bash
 git clone git@github.com:sneglen/wind-power-forecast.git && cd wind-power-forecast
@@ -27,6 +27,9 @@ make all       # full pipeline on real data (data/raw/dk1.csv, from Step 1)
 
 Individual stages: `make data`, `make backtest`, `make evaluate`, `make figures`.
 Any target accepts another config: `make all CONFIG=path/to/config.toml`.
+
+Making a change: `make lint test`, commit, then `git push && make ci-watch` to confirm the
+GitHub Actions run for that commit is green (needs the [GitHub CLI](https://cli.github.com/)).
 
 ## Problem and data
 
@@ -74,7 +77,7 @@ _Pending._
 
 ## Reproducibility
 
-- **Environment:** Python 3.12 pinned in `.python-version` and `pyproject.toml`; every
+- **Environment:** Python 3.12.15 pinned in `.python-version` (`pyproject.toml` allows 3.12.x); every
   dependency pinned in `uv.lock`. CI installs with `uv sync --locked`.
 - **Configuration:** every date, NWP point, quantile level and hyper-parameter lives in
   [`config.toml`](config.toml). Variant configs inherit from it with `base = "..."` and
@@ -83,7 +86,9 @@ _Pending._
   `data → backtest → evaluate → figures`.
 - **CI:** GitHub Actions runs lint (pre-commit: ruff, formatting, lock check), the test suite,
   and a smoke run of the full pipeline on a committed sample, whose outputs are uploaded as
-  a build artefact.
+  a build artefact. A change counts as done only when CI is green for the pushed commit:
+  `git push && make ci-watch` waits for that run (it appears a few seconds after the push),
+  follows it to the end and fails if any job fails.
 - **Synthetic sample:** `data/sample/dk1_synthetic.csv` is generated deterministically by
   `make sample`; a test checks the committed file matches the generator. It is not real data.
 
@@ -96,7 +101,7 @@ src/wpforecast/
   config.py               typed, validated config loading
   pipeline.py             pipeline stages
   __main__.py             CLI: wpforecast <stage> --config ...
-scripts/                  one-off utilities (synthetic sample generator)
+scripts/                  utilities: synthetic sample generator, CI watcher
 tests/                    unit tests, look-ahead test, end-to-end smoke test
 data/sample/              committed synthetic sample + smoke config
 data/raw, data/interim    downloaded / derived data (git-ignored)
