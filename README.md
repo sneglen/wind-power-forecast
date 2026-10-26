@@ -9,6 +9,9 @@ that uncertainty is worth in the DK1 single-price imbalance market. Data: 2024â€
 > **Status:** Step 0 â€” reproducible skeleton. The pipeline runs end to end on a
 > synthetic sample with a climatology benchmark; real data and models follow.
 
+Developed with AI assistance (Claude Code); modelling choices and their reasons are mine and
+recorded in [DECISIONS.md](DECISIONS.md).
+
 ## Results at a glance
 
 _Pending._
@@ -107,6 +110,7 @@ data/sample/              committed synthetic sample + smoke config
 data/raw, data/interim    downloaded / derived data (git-ignored)
 outputs/, figures/        generated artefacts (git-ignored)
 DECISIONS.md              running decision log
+CLAUDE.md                 project rules for AI-assisted work
 ```
 
 ## Decision log
