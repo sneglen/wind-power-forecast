@@ -239,6 +239,11 @@ def test_build_on_sample(cfg):
     assert (imbalance.index.minute % 15 == 0).all()
 
 
+def test_read_explains_missing_tables(cfg):
+    with pytest.raises(FileNotFoundError, match="end of `make data`"):
+        build.read(cfg, "production")
+
+
 def test_checks_pass_on_sample(cfg):
     build.build(cfg)
     report = checks.run(cfg)

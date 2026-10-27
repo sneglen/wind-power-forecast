@@ -165,4 +165,10 @@ def build(cfg: Config) -> dict[str, Path]:
 
 
 def read(cfg: Config, name: str) -> pd.DataFrame:
-    return pd.read_parquet(cfg.paths.interim / f"{name}.parquet")
+    path = cfg.paths.interim / f"{name}.parquet"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found: the interim tables are built at the end of `make data`, "
+            "once every download is complete."
+        )
+    return pd.read_parquet(path)
