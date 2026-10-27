@@ -25,3 +25,6 @@ htmlcov/
 
 # Local API call ledgers (Open-Meteo budget), never committed
 ledger.json
+
+# Misc
+plan-chat.md
