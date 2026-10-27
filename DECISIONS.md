@@ -138,9 +138,9 @@ needed (Vesterhav Nord/Syd, Thor). Onshore points request land grid cells and of
 sea cells (`cell_selection`), two requests per run; every cell is within 7.3 km.
 `availability_lag_h = 7`.
 **Why:** Open-Meteo's default picks a land cell of similar elevation, which put the Vesterhav
-Nord point 18 km away on the coast. Run availability on Open-Meteo was observed at 6.1 h after
-initialisation (2026-10-26), so the 00 UTC run is usable by 07:00 UTC, before the 09:00 UTC
-summer issue time.
+Nord point 18 km away on the coast. Run availability on Open-Meteo was observed 6.1 h after
+initialisation for the 06 UTC run of 2026-10-26 and 6.5 h for the 00 UTC run of 2026-10-27,
+so the 00 UTC run is usable by 07:00 UTC, two hours before the 09:00 UTC summer issue time.
 
 ### D-017 · 2026-10-26 · Seven NWP variables instead of two
 **Decision:** besides 100 m speed and direction, download 10 m and 120 m speed, 10 m gusts,

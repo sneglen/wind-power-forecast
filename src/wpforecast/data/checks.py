@@ -322,7 +322,7 @@ def provenance(cfg: Config) -> str:
         "to two years, so these dates define the snapshot.\n"
         f"- NWP: `{cfg.nwp.model}` 00 UTC runs from the Open-Meteo Single Runs API. Runs "
         f"are assumed usable {cfg.nwp.availability_lag_h} h after initialisation "
-        "(observed ≈ 6.1 h on 2026-10-26), before the 09:00 UTC summer issue time.\n"
+        "(observed 6.1–6.5 h on 2026-10-26/27), before the 09:00 UTC summer issue time.\n"
         "- Sources: Energinet (www.energidataservice.dk), CC BY 4.0; "
         "weather data by Open-Meteo.com (ECMWF), CC BY 4.0."
     )

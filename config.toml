@@ -59,7 +59,7 @@ variables = [
     "temperature_2m", "surface_pressure",
 ]
 cycle_utc = 0
-availability_lag_h = 7        # observed ~6.1 h on Open-Meteo (2026-10-26); +0.9 h margin
+availability_lag_h = 7        # observed 6.1-6.5 h on Open-Meteo (2026-10-26/27)
 max_lead_h = 72
 
 [nwp.ensemble]
