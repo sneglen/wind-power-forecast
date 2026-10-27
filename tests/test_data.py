@@ -82,6 +82,18 @@ def test_server_wait_parsing():
     assert http.server_wait_s(httpx.Response(429, text="slow down")) is None
 
 
+def test_open_meteo_limits():
+    hourly = httpx.Response(
+        429,
+        text='{"reason":"Hourly API request limit exceeded. Please try again in the next hour."}',
+    )
+    assert 60 <= http.server_wait_s(hourly) <= 3660
+    daily = httpx.Response(429, text='{"reason":"Daily API request limit exceeded."}')
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: daily))
+    with pytest.raises(http.LimitExceeded):
+        http.get(client, "https://x.test/a", {})  # not retried: no sleep fixture needed
+
+
 def test_get_retries_429_then_succeeds(no_sleep):
     calls = iter([httpx.Response(429, text="Try again in 3 seconds"), httpx.Response(200, json={})])
     client = httpx.Client(transport=httpx.MockTransport(lambda request: next(calls)))

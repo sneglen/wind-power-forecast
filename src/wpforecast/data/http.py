@@ -1,12 +1,14 @@
 """HTTP plumbing shared by the downloaders: retries on transient errors and throttling.
 
 Retried: transport errors, HTTP 429 and 5xx. A 429 waits as long as the server asks
-(``Retry-After`` header, or Energi Data Service's "Try again in N seconds" message).
+(``Retry-After`` header, Energi Data Service's "Try again in N seconds", Open-Meteo's
+"try again in the next hour"). A daily quota is not retried: it raises ``LimitExceeded``.
 Any other status is returned to the caller, which decides what it means.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 import time
 from collections.abc import Callable
@@ -20,10 +22,14 @@ MAX_ATTEMPTS = 6
 SLEEP: Callable[[float], None] = time.sleep  # replaced in tests
 
 
-class RetryableError(Exception):
+class RetryableError(RuntimeError):
     def __init__(self, message: str, wait_s: float | None = None) -> None:
         super().__init__(message)
         self.wait_s = wait_s
+
+
+class LimitExceeded(RuntimeError):
+    """A quota that only resets much later (e.g. per day); retrying now is pointless."""
 
 
 def client(timeout_s: float = 120.0) -> httpx.Client:
@@ -35,8 +41,14 @@ def server_wait_s(response: httpx.Response) -> float | None:
     header = response.headers.get("Retry-After")
     if header and header.isdigit():
         return float(header)
-    match = re.search(r"try again in (\d+) seconds", response.text, flags=re.IGNORECASE)
-    return float(match.group(1)) if match else None
+    text = response.text.lower()
+    match = re.search(r"try again in (\d+) seconds", text)
+    if match:
+        return float(match.group(1))
+    if "next hour" in text:
+        now = dt.datetime.now(dt.UTC)
+        return 3600.0 - (now.minute * 60 + now.second) + 60.0
+    return None
 
 
 def _wait(state: RetryCallState) -> float:
@@ -51,6 +63,8 @@ def get(http: httpx.Client, url: str, params: dict[str, Any]) -> httpx.Response:
 
     def attempt() -> httpx.Response:
         response = http.get(url, params=params)
+        if response.status_code == 429 and "daily" in response.text.lower():
+            raise LimitExceeded(f"{url}: {response.text[:200]}")
         if response.status_code == 429 or response.status_code >= 500:
             raise RetryableError(
                 f"HTTP {response.status_code} from {url}: {response.text[:200]}",

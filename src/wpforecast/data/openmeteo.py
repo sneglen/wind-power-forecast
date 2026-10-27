@@ -5,9 +5,10 @@ points on sea grid cells) and stored as received in
 ``<raw>/openmeteo/<model>/<YYYY>/<YYYY-MM-DD>T<HH>.json.gz``. A run the archive does not
 have is stored as a marker with the API's reason, so it is not requested again.
 
-The free tier allows 5000 calls / hour and 10000 / day; a call ledger keeps the download
-under the configured budgets. When the daily budget is spent the download stops cleanly;
-running it again later resumes where it stopped.
+The free tier allows 5000 calls / hour and 10000 / day, counting each location as a call.
+A call ledger shared by every config on this machine (``~/.cache/wpforecast``) keeps the
+download under the configured budgets. When the daily budget is spent the download stops
+cleanly; running it again later resumes where it stopped.
 Data licence: CC BY 4.0, "Weather data by Open-Meteo.com" (ECMWF open data).
 """
 
@@ -18,6 +19,7 @@ import gzip
 import json
 import logging
 import math
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -72,6 +74,12 @@ class Budget:
         self.entries.append([self.now(), weight])
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self.entries))
+
+
+def ledger_path() -> Path:
+    """One ledger per machine: the API quota is per client, whichever config downloads."""
+    cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    return cache / "wpforecast" / "openmeteo_ledger.json"
 
 
 def run_times(cfg: Config) -> list[pd.Timestamp]:
@@ -157,12 +165,18 @@ def download(cfg: Config, client: httpx.Client | None = None) -> None:
         raise FileNotFoundError(f"offline mode, but {len(missing)} Open-Meteo runs are missing")
 
     om = cfg.data.openmeteo
-    budget = Budget(raw / "openmeteo" / "ledger.json", om.calls_per_hour, om.calls_per_day)
+    budget = Budget(ledger_path(), om.calls_per_hour, om.calls_per_day)
     throttle = http.Throttle(om.min_interval_s)
     log.info("openmeteo: %d runs to download", len(missing))
     with client or http.client() as session:
         for i, run in enumerate(missing, 1):
-            payload = fetch_run(cfg, session, run, budget, throttle)
+            try:
+                payload = fetch_run(cfg, session, run, budget, throttle)
+            except http.LimitExceeded as exc:
+                raise BudgetExhausted(
+                    f"Open-Meteo quota reached after {i - 1} runs ({exc}); "
+                    "run `make data` again tomorrow to continue."
+                ) from exc
             path = run_path(raw, model, run)
             path.parent.mkdir(parents=True, exist_ok=True)
             with gzip.open(path, "wt") as f:

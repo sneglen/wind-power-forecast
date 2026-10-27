@@ -22,7 +22,7 @@ min_interval_s = 5.0          # pause between requests; the API returns 429 on b
 [data.openmeteo]              # Open-Meteo Single Runs API, free tier, CC BY 4.0
 base_url = "https://single-runs-api.open-meteo.com/v1/forecast"
 calls_per_hour = 4500         # free tier: 5000 / hour, 10000 / day
-calls_per_day = 9500
+calls_per_day = 9800         # 200 below the limit; the ledger is shared by all configs
 calls_per_location = 1.0      # conservative: each location in a request counts as a call
 min_interval_s = 1.0
 

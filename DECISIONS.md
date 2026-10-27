@@ -152,8 +152,12 @@ shear, gusts or air density. The core models use only the 100 m fields.
 ### D-018 · 2026-10-26 · Open-Meteo free tier with a conservative call budget
 **Decision:** use the free, non-commercial tier with CC BY 4.0 attribution. The downloader
 assumes every location in a request counts as one call (19 per run, undocumented) and keeps
-a rolling ledger under 4500 calls/hour and 9500/day; when the day is spent it stops, and the
-next `make data` resumes. The full archive (957 runs) therefore takes two days.
+a rolling ledger under 4500 calls/hour and 9800/day, shared by every config on the machine
+(`~/.cache/wpforecast/`); when the day is spent it stops, and the next `make data` resumes.
+The full archive (957 runs, 18,183 calls) therefore takes two days. An Open-Meteo 429 for the
+hourly quota waits for the next hour; the daily quota stops the download cleanly.
+**Evidence:** the first full run hit Open-Meteo's hourly limit at ~5000 calls when two
+configs kept separate ledgers, which confirmed that every location counts as a call.
 **Why:** the portfolio project is non-commercial; staying well inside the limits avoids being
 blocked. The paid Professional plan (≈ €99/month) stays the fallback if data is missing.
 
