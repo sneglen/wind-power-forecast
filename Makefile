@@ -2,7 +2,7 @@
 CONFIG ?= config.toml
 RUN := uv run wpforecast
 
-.PHONY: help install data check backtest evaluate figures all smoke sample lint test ci-watch clean
+.PHONY: help install data check features backtest evaluate figures all smoke sample lint test ci-watch clean
 
 help:  ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -17,6 +17,9 @@ data:  ## Download (cached, resumable), build interim tables, write data check
 check:  ## Re-run the data check report on the interim tables
 	$(RUN) check --config $(CONFIG)
 
+features:  ## One row per issue time x target hour, from issue-time information only
+	$(RUN) features --config $(CONFIG)
+
 backtest:  ## Issue day-ahead forecasts over [dates]
 	$(RUN) backtest --config $(CONFIG)
 
@@ -26,7 +29,7 @@ evaluate:  ## Score out-of-sample forecasts
 figures:  ## Render figures from the evaluation
 	$(RUN) figures --config $(CONFIG)
 
-all:  ## Run data -> backtest -> evaluate -> figures
+all:  ## Run data -> features -> backtest -> evaluate -> figures
 	$(RUN) all --config $(CONFIG)
 
 smoke:  ## Full pipeline on the committed synthetic sample

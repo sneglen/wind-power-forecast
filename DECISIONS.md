@@ -154,7 +154,7 @@ shear, gusts or air density. The core models use only the 100 m fields.
 assumes every location in a request counts as one call (19 per run, undocumented) and keeps
 a rolling ledger under 4500 calls/hour and 9800/day, shared by every config on the machine
 (`~/.cache/wpforecast/`); when the day is spent it stops, and the next `make data` resumes.
-The full archive (957 runs, 18,183 calls) therefore takes two days. An Open-Meteo 429 for the
+The full archive (956 runs, 18,164 calls) therefore takes two days. An Open-Meteo 429 for the
 hourly quota waits for the next hour; the daily quota stops the download cleanly.
 **Evidence:** the first full run hit Open-Meteo's hourly limit at ~5000 calls when two
 configs kept separate ledgers, which confirmed that every location counts as a call.
@@ -167,3 +167,53 @@ blocked. The paid Professional plan (≈ €99/month) stays the fallback if data
 consistency, units and ranges, grid cells, and normalised power vs NWP wind speed.
 **Why:** reproducible from `make`, tested in CI on the sample, readable on GitHub.
 **Rejected:** a Jupyter notebook (the plan's wording): harder to test and to diff.
+
+### D-020 · 2026-10-27 · Feature rows cover k = 1 to the end of day D
+**Decision:** `features.py` writes one row per issue time and target hour, from the first
+hour after the issue to the end of local day D: k = 1–13 on D−1 plus the day-ahead product
+(`in_product`, k = 14–37, 36/38 on DST days); 37 rows per issue. Scores use product hours
+only. Target days before `train_start` are labelled `warmup` (history for the first fits).
+**Why:** the plan's horizons are k = 1–37; the short horizons give the Step 4 correction
+term and persistence-type baselines their data, at no cost to the product evaluation.
+**Note:** with one issue per day, horizon and hour of day are tied (k = 14 is always local
+midnight), so horizon effects and diurnal effects cannot be separated.
+
+### D-021 · 2026-10-27 · NWP: latest usable run, hour means
+**Decision:** each issue takes the latest run with `run + availability_lag_h ≤ issue` that
+covers all its target hours: the 00 UTC run of D−1, or D−2's (leads up to 71 h) if D−1's is
+missing upstream. The hourly mean over [t, t + 1 h) is the mean of the instantaneous values
+at t and t + 1 h; wind is averaged as u/v components and direction derived from the means;
+gusts (maximum over the preceding hour) take the value at t + 1 h. Regional `@onshore` and
+`@offshore` columns average the points of each region. `lead_h` counts to the end of the hour.
+**Why:** production is an hourly mean, NWP fields are instantaneous; the trapezoid is the
+simplest unbiased match. A fallback run keeps a day forecastable instead of dropping it.
+**Rejected:** the value at t or t + 1 h alone (half-hour shift); averaging directions in
+degrees (wrong across north).
+
+### D-022 · 2026-10-27 · Capacity and persistence at the last known hour
+**Decision:** `y_issue` and `capacity_issue_mw` are read at the last hour known at the issue
+time (stamp `issue − 1 h − power_lag_h`). The target stays y = P(t) / C(t), with C at the
+target hour; conversions to MW at forecast time use `capacity_issue_mw`.
+**Why:** C(t) for a future month is not known at issue time, so it must not reach the
+inputs; as a target normaliser it is a definition, not information. Tests corrupt every
+value stamped after the last known hour and require the inputs to stay unchanged.
+**Caveat:** the register itself is published with a lag; reading it at the issue hour treats
+the monthly value as known from the start of its month.
+
+### D-023 · 2026-10-27 · Backtest harness: observe, fit/update, predict
+**Decision:** `backtest.run` loops over issue times. It first releases rows whose target is
+known (stamp + 1 h + `power_lag_h` ≤ issue), then fits or updates by regime — `frozen`: fit
+once at the start; `walk_forward`: refit at the first issue of each month on everything
+known; `recursive`: fit once, then `update` with each day's released rows — and only then
+calls `predict` with the input columns of that issue. Quantile crossing is fixed by sorting.
+**Why:** the harness, not each model, enforces the information set, so leakage is
+structurally impossible; one loop serves all three adaptivity regimes.
+**Rejected:** per-model backtest code (each model would have to re-implement the timing).
+
+### D-024 · 2026-10-27 · Curtailed hours never reach a model
+**Decision:** `curtailed` = day-ahead price ≤ `[curtailment] da_price_max` at the target
+hour (a missing price counts as not curtailed). The harness drops curtailed hours and missing
+targets from everything it releases to models; evaluation reports scores with and without
+them. Prices are never inputs, and the feature builder refuses any input column named price.
+**Why:** negative prices trigger curtailment, so those hours measure a market decision, not
+the weather; the price is only known after the issue time.

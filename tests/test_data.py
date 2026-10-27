@@ -8,23 +8,8 @@ import httpx
 import pandas as pd
 import pytest
 
-from wpforecast.config import Config, load_config
+from wpforecast.config import Config
 from wpforecast.data import build, capacity, checks, eds, http, openmeteo
-
-ROOT = Path(__file__).resolve().parents[1]
-SMOKE = ROOT / "data" / "sample" / "smoke.toml"
-
-
-@pytest.fixture
-def cfg(tmp_path) -> Config:
-    base = load_config(SMOKE)
-    paths = dataclasses.replace(
-        base.paths,
-        raw=ROOT / base.paths.raw,
-        interim=tmp_path / "interim",
-        reports=tmp_path / "reports",
-    )
-    return dataclasses.replace(base, paths=paths)
 
 
 @pytest.fixture

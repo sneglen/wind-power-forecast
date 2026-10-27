@@ -1,19 +1,18 @@
-"""Pipeline stages: data -> backtest -> evaluate -> figures.
+"""Pipeline stages: data -> features -> backtest -> evaluate -> figures.
 
-``data`` downloads, builds and checks the inputs (Step 1, ``wpforecast.data``). The
-backtest is still the climatological quantile benchmark; later steps replace the internals
-(adaptive models, market backtest) behind the same stage interfaces.
+``data`` downloads, builds and checks the inputs (``wpforecast.data``). ``features`` builds
+one row per issue time x target hour from the information set at issue time
+(``wpforecast.features``). ``backtest`` runs a model through the event loop of
+``wpforecast.backtest``; it is still the climatology benchmark, and later steps add models
+behind the same interfaces.
 
 Conventions: timestamps are UTC, hour-beginning. Power is capacity-normalised to [0, 1].
-An observation stamped ``t`` covers ``[t, t + 1h)`` and becomes usable at
-``t + 1h + power_lag_h``; it may enter a forecast only if that instant is <= the issue time.
-Horizon ``k`` = hours from the issue time to the END of the target hour, so k = 1 is the
-first hour after issue and the day-ahead product (local day D) is k = 14..37.
+Horizon ``k`` = hours from the issue time to the END of the target hour; the day-ahead
+product (local day D) is k = 14..37. Scores cover the product hours only.
 """
 
 from __future__ import annotations
 
-import datetime as dt
 import json
 import logging
 from pathlib import Path
@@ -21,59 +20,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from wpforecast import data
+from wpforecast import backtest, data, features
+from wpforecast.backtest import qcol
 from wpforecast.config import Config
 from wpforecast.data import checks
+from wpforecast.models.baselines import Climatology
 
 log = logging.getLogger(__name__)
 
-DATASET = "dataset.parquet"
 FORECASTS = "forecasts.parquet"
 METRICS = "metrics.json"
 RELIABILITY = "reliability.png"
-
-
-def qcol(level: float) -> str:
-    """Column name holding the forecast of quantile ``level``."""
-    return f"q{level:g}"
-
-
-def issue_time_utc(cfg: Config, target_day: dt.date) -> pd.Timestamp:
-    """Instant at which the forecast for local ``target_day`` is issued (day before, local)."""
-    local = dt.datetime.combine(target_day - dt.timedelta(days=1), cfg.issue.time_local)
-    return pd.Timestamp(local, tz=cfg.issue.tz).tz_convert("UTC")
-
-
-def target_hours_utc(cfg: Config, target_day: dt.date) -> pd.DatetimeIndex:
-    """Hour-beginning UTC stamps of local ``target_day`` (23, 24 or 25 hours with DST)."""
-    start = pd.Timestamp(target_day, tz=cfg.issue.tz)
-    end = pd.Timestamp(target_day + dt.timedelta(days=1), tz=cfg.issue.tz)
-    return pd.date_range(start, end, freq="h", inclusive="left").tz_convert("UTC")
-
-
-def horizons(issue: pd.Timestamp, targets: pd.DatetimeIndex) -> np.ndarray:
-    """Horizon k (hours, to the end of each hour-beginning target stamp)."""
-    return ((targets - issue) / pd.Timedelta(hours=1)).to_numpy() + 1
-
-
-def period(cfg: Config, day: dt.date) -> str:
-    """Which evaluation period a target day belongs to."""
-    d = cfg.dates
-    if day < d.validation_start:
-        return "train"
-    if day <= d.train_end:
-        return "validation"
-    if day <= d.test_end:
-        return "test"
-    return "stress"
-
-
-def _last_day(cfg: Config, index: pd.DatetimeIndex) -> dt.date:
-    """Last target day: stress_end if set, else the last local day fully covered by data."""
-    if cfg.dates.stress_end is not None:
-        return cfg.dates.stress_end
-    day = index[-1].tz_convert(cfg.issue.tz).date()
-    return day if target_hours_utc(cfg, day)[-1] <= index[-1] else day - dt.timedelta(days=1)
 
 
 def _require(path: Path, hint: str) -> Path:
@@ -85,7 +42,7 @@ def _require(path: Path, hint: str) -> Path:
 def run_data(cfg: Config) -> Path:
     """Download what is missing, build the interim tables and write the data-check report."""
     data.acquire(cfg)
-    return cfg.paths.interim / DATASET
+    return cfg.paths.interim
 
 
 def run_check(cfg: Config) -> Path:
@@ -94,56 +51,22 @@ def run_check(cfg: Config) -> Path:
     return cfg.paths.reports / checks.REPORT
 
 
+def run_features(cfg: Config) -> Path:
+    """One row per issue time x target hour, inputs restricted to the issue-time information."""
+    return features.run(cfg)
+
+
 def run_backtest(cfg: Config) -> Path:
-    """Issue one day-ahead forecast per target day using only information at issue time.
-
-    Step 0 benchmark: empirical quantiles of the last ``window_days`` of observed
-    normalised power (climatology), identical for every hour of the target day.
-    """
-    df = pd.read_parquet(_require(cfg.paths.interim / DATASET, "Run `make data` first."))
-    power = df["power_norm"]
-    usable_at = power.index + pd.Timedelta(hours=1 + cfg.issue.power_lag_h)
-    window = pd.Timedelta(days=cfg.model.climatology.window_days)
-    levels = np.asarray(cfg.quantiles.levels)
-
-    frames = []
-    last = _last_day(cfg, power.index)
-    for day in pd.date_range(cfg.dates.train_start, last, freq="D").date:
-        issue = issue_time_utc(cfg, day)
-        targets = target_hours_utc(cfg, day)
-        k = horizons(issue, targets)
-        if k.max() > cfg.issue.max_horizon_h:
-            raise ValueError(f"target day {day} needs k = {k.max():g} > max_horizon_h")
-        history = power[(usable_at <= issue) & (power.index >= issue - window)].dropna()
-        if len(history) < 24:
-            log.warning("backtest: skipping %s, only %d usable hours", day, len(history))
-            continue
-        if not history.index[-1] < issue < targets[0]:
-            raise RuntimeError(f"issue-time discipline violated for target day {day}")
-
-        q = np.quantile(history.to_numpy(), levels)
-        frame = pd.DataFrame(
-            {
-                "target_day": day,
-                "period": period(cfg, day),
-                "issue_time_utc": issue,
-                "time_utc": targets,
-                "horizon_h": k,
-                "observed": power.reindex(targets).to_numpy(),
-            }
-        )
-        for level, value in zip(levels, q, strict=True):
-            frame[qcol(level)] = value
-        frames.append(frame)
-
-    if not frames:
-        raise ValueError("backtest produced no forecasts; check [dates] against the data range")
-    fc = pd.concat(frames, ignore_index=True)
+    """Climatology benchmark, updated daily, for every target day from ``train_start``."""
+    table = features.read(cfg)
+    last = pd.to_datetime(table["target_day"]).dt.date.max()
+    model = Climatology(cfg.quantiles.levels, cfg.model.climatology.window_days)
+    fc = backtest.run(cfg, model, table, "recursive", cfg.dates.train_start, last)
 
     out = cfg.paths.outputs / FORECASTS
     out.parent.mkdir(parents=True, exist_ok=True)
-    fc.to_parquet(out)
-    log.info("backtest: %d target days, %d rows -> %s", len(frames), len(fc), out)
+    fc.to_parquet(out, index=False)
+    log.info("backtest: %d target days, %d rows -> %s", fc["target_day"].nunique(), len(fc), out)
     return out
 
 
@@ -153,16 +76,9 @@ def pinball(y: np.ndarray, f: np.ndarray, level: float) -> float:
     return float(np.mean(np.maximum(level * diff, (level - 1) * diff)))
 
 
-def run_evaluate(cfg: Config) -> Path:
-    """Score the test period: pinball loss and empirical coverage per quantile."""
-    fc = pd.read_parquet(_require(cfg.paths.outputs / FORECASTS, "Run `make backtest` first."))
-    fc = fc[fc["period"] == "test"]
-    fc = fc.dropna(subset=["observed"])
-    if fc.empty:
-        raise ValueError("no out-of-sample forecasts with observations to evaluate")
-
-    y = fc["observed"].to_numpy()
-    per_level = [
+def _scores(cfg: Config, fc: pd.DataFrame) -> list[dict]:
+    y = fc["y"].to_numpy()
+    return [
         {
             "level": level,
             "pinball": pinball(y, fc[qcol(level)].to_numpy(), level),
@@ -170,11 +86,25 @@ def run_evaluate(cfg: Config) -> Path:
         }
         for level in cfg.quantiles.levels
     ]
+
+
+def run_evaluate(cfg: Config) -> Path:
+    """Score the day-ahead product hours of the test period, with and without curtailment."""
+    fc = pd.read_parquet(_require(cfg.paths.outputs / FORECASTS, "Run `make backtest` first."))
+    fc = fc[(fc["period"] == "test") & fc["in_product"]].dropna(subset=["y"])
+    if fc.empty:
+        raise ValueError("no out-of-sample forecasts with observations to evaluate")
+
+    per_level = _scores(cfg, fc)
+    clean = _scores(cfg, fc[~fc["curtailed"]])
     metrics = {
-        "model": "climatology",
+        "model": str(fc["model"].iloc[0]),
+        "regime": str(fc["regime"].iloc[0]),
         "test_period": [cfg.dates.test_start.isoformat(), cfg.dates.test_end.isoformat()],
         "n_hours": len(fc),
+        "n_curtailed": int(fc["curtailed"].sum()),
         "mean_pinball": float(np.mean([m["pinball"] for m in per_level])),
+        "mean_pinball_excl_curtailed": float(np.mean([m["pinball"] for m in clean])),
         "quantiles": per_level,
     }
 
@@ -219,6 +149,7 @@ def run_figures(cfg: Config) -> Path:
 STAGES = {
     "data": run_data,
     "check": run_check,
+    "features": run_features,
     "backtest": run_backtest,
     "evaluate": run_evaluate,
     "figures": run_figures,
@@ -226,5 +157,5 @@ STAGES = {
 
 
 def run_all(cfg: Config) -> None:
-    for name in ("data", "backtest", "evaluate", "figures"):  # data includes the check
+    for name in ("data", "features", "backtest", "evaluate", "figures"):  # data runs the check
         STAGES[name](cfg)

@@ -6,8 +6,8 @@ Day-ahead forecasts of DK1 wind power as calibrated, self-adapting predictive di
 (recursive least squares, time-adaptive quantile regression, bounded distributions), and what
 that uncertainty is worth in the DK1 single-price imbalance market. Data: 2024–2026.
 
-> **Status:** Step 1 — data acquisition and verification. The pipeline runs end to end on
-> real DK1 data with a climatology benchmark; models follow.
+> **Status:** Step 2 — forecast problem, information set and backtest harness. The pipeline
+> runs end to end on real DK1 data with a climatology benchmark; models follow.
 
 Developed with AI assistance (Claude Code); modelling choices and their reasons are mine and
 recorded in [DECISIONS.md](DECISIONS.md).
@@ -29,7 +29,8 @@ make data      # download all inputs (resumable; ~2 days on the Open-Meteo free 
 make all       # full pipeline on the downloaded data
 ```
 
-Individual stages: `make data`, `make backtest`, `make evaluate`, `make figures`.
+Individual stages: `make data`, `make features`, `make backtest`, `make evaluate`,
+`make figures`.
 Any target accepts another config: `make all CONFIG=path/to/config.toml`.
 
 Making a change: `make lint test`, commit, then `git push && make ci-watch` to confirm the
@@ -65,7 +66,28 @@ Weather data by [Open-Meteo.com](https://open-meteo.com/) (ECMWF), CC BY 4.0.
 
 ## Issue-time discipline
 
-_Pending._
+Every forecast is computed only from what was known at its issue time, t0 = 11:00 local on
+D−1. Each issue has 37 rows (`make features`), one per target hour from k = 1 to the end of
+day D. The day-ahead product is k = 14–37.
+
+| Information | Usable at t0 if | In practice |
+|---|---|---|
+| production, capacity | stamp + 1 h ≤ t0 | everything up to the hour ending at t0 |
+| NWP run r | r + 7 h ≤ t0 | 00 UTC run of D−1, or D−2's if it is missing |
+| day-ahead price | never (published ~13:00) | only flags curtailed target hours |
+
+The backtest is an event loop over issue times: **observe** the targets that have become
+known, **fit or update** the model (frozen, monthly walk-forward refit, or a daily recursive
+update), then **predict** from the issue's input columns. The harness enforces the
+information set, not the models. Hours with a day-ahead price ≤ 0 (curtailment) are never
+used for fitting and are scored both with and without.
+
+Tests corrupt every value stamped after the information set (production, capacity, later
+NWP runs, prices) and require the issue's inputs and forecasts to stay identical. The same
+tests require a change to the last known hour to move them, so the boundary is exact.
+
+With one issue per day, horizon and hour of day are tied (k = 14 is always local midnight),
+so horizon and diurnal effects cannot be separated.
 
 ## Methods
 
@@ -111,7 +133,7 @@ _Pending._
   [`config.toml`](config.toml). Variant configs inherit from it with `base = "..."` and
   override only what changes (see [`data/sample/smoke.toml`](data/sample/smoke.toml)).
 - **Pipeline:** `make all` regenerates every artefact from raw data; stages are
-  `data → backtest → evaluate → figures`.
+  `data → features → backtest → evaluate → figures`.
 - **CI:** GitHub Actions runs lint (pre-commit: ruff, formatting, lock check), the test suite,
   and a smoke run of the full pipeline on a committed sample, whose outputs are uploaded as
   a build artefact. A change counts as done only when CI is green for the pushed commit:
@@ -125,11 +147,14 @@ _Pending._
 
 ```
 config.toml               dates, points, quantile grid, hyper-parameters
-Makefile                  data | backtest | evaluate | figures | all | smoke | test | lint
+Makefile                  data | features | backtest | evaluate | figures | all | smoke | test
 src/wpforecast/
   config.py               typed, validated config loading
   pipeline.py             pipeline stages
   data/                   eds.py · openmeteo.py · capacity.py · build.py · checks.py
+  features.py             issue times, horizons, periods; the issue-time feature table
+  backtest.py             event loop: observe -> fit/update -> predict
+  models/                 forecast models (baselines.py: climatology)
   __main__.py             CLI: wpforecast <stage> --config ...
 scripts/                  utilities: CI watcher
 tests/                    unit tests, look-ahead test, end-to-end smoke test
