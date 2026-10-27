@@ -23,7 +23,7 @@ import pandas as pd
 from wpforecast import backtest, data, features
 from wpforecast.backtest import qcol
 from wpforecast.config import Config
-from wpforecast.data import checks
+from wpforecast.data import checks, ens
 from wpforecast.models.baselines import Climatology
 
 log = logging.getLogger(__name__)
@@ -49,6 +49,12 @@ def run_check(cfg: Config) -> Path:
     """Re-run the data checks on the existing interim tables."""
     checks.run(cfg)
     return cfg.paths.reports / checks.REPORT
+
+
+def run_ens(cfg: Config) -> Path:
+    """Download ECMWF ENS point values (Extension A); separate from `data`, not in `all`."""
+    ens.download(cfg)
+    return cfg.paths.raw / "ens"
 
 
 def run_features(cfg: Config) -> Path:
@@ -149,6 +155,7 @@ def run_figures(cfg: Config) -> Path:
 STAGES = {
     "data": run_data,
     "check": run_check,
+    "ens": run_ens,
     "features": run_features,
     "backtest": run_backtest,
     "evaluate": run_evaluate,

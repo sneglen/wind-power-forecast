@@ -217,3 +217,19 @@ targets from everything it releases to models; evaluation reports scores with an
 them. Prices are never inputs, and the feature builder refuses any input column named price.
 **Why:** negative prices trigger curtailment, so those hours measure a market decision, not
 the weather; the price is only known after the issue time.
+
+### D-025 · 2026-10-27 · ENS point extract from dynamical.org, a separate `make ens`
+**Decision:** `make ens` reads the dynamical.org dataset
+`ecmwf-ifs-ens-forecast-15-day-0-25-degree` (Icechunk/Zarr via `dynamical-catalog`) and
+keeps, per 00 UTC run from 2024-04-01, the 51 members of 100 m u/v wind at the grid cell
+nearest each of the 19 points, leads 0–72 h (3-hourly): one parquet file per run (~80 kB),
+resumable, four runs in parallel. Runs absent from the archive are recorded once. It is not
+part of `make data` or `make all`.
+**Why:** all DK1 points sit in one 8° storage chunk, so a run costs two chunk reads (~2 s);
+the whole archive takes about 30 minutes, so no overnight download is needed despite the
+plan's caution. Point values are enough for the plan's features (ensemble mean, spread,
+member-wise power). Keeping it out of `make data` leaves the core pipeline independent of
+the extension.
+**Rejected:** regridding or keeping the DK1 box (unneeded volume); Open-Meteo's ensemble
+API (counts each member as calls against the free-tier budget).
+**Open (Step 8):** verify that the 00 UTC ENS run is published before the issue time.

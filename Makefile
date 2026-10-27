@@ -2,7 +2,7 @@
 CONFIG ?= config.toml
 RUN := uv run wpforecast
 
-.PHONY: help install data check features backtest evaluate figures all smoke sample lint test ci-watch clean
+.PHONY: help install data check ens features backtest evaluate figures all smoke sample lint test ci-watch clean
 
 help:  ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -16,6 +16,9 @@ data:  ## Download (cached, resumable), build interim tables, write data check
 
 check:  ## Re-run the data check report on the interim tables
 	$(RUN) check --config $(CONFIG)
+
+ens:  ## Download ECMWF ENS point values from dynamical.org (Extension A, ~1 h)
+	$(RUN) ens --config $(CONFIG)
 
 features:  ## One row per issue time x target hour, from issue-time information only
 	$(RUN) features --config $(CONFIG)

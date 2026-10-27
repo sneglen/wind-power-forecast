@@ -22,6 +22,7 @@ in `data/sample/` is committed.
 | | [DayAheadPrices](https://api.energidataservice.dk/meta/dataset/DayAheadPrices) | 15 min, from 2025-10-01 | day-ahead price |
 | | [ImbalancePrice](https://api.energidataservice.dk/meta/dataset/ImbalancePrice) | 15 min, from 2025-03-04 | market backtest |
 | Open-Meteo | [Single Runs API](https://open-meteo.com/en/docs/single-runs-api), model `ecmwf_ifs` | 1 h, leads 0–72 h | NWP: ECMWF IFS HRES 9 km, 00 UTC runs |
+| dynamical.org | [ECMWF IFS ENS, 15 day, 0.25°](https://dynamical.org/catalog/ecmwf-ifs-ens-forecast-15-day-0-25-degree/) | 3 h, leads 0–72 h | Extension A: 51-member ensemble, 100 m u/v wind, 00 UTC runs from 2024-04-01 (`make ens`) |
 
 All requests are for price area DK1 and UTC days 2024-03-14 .. 2026-10-25 (`[data]` in
 `config.toml`).
@@ -67,5 +68,7 @@ Energy per hour (MWh/h) is written as average power (MW).
 - Weather data by [Open-Meteo.com](https://open-meteo.com/), [CC BY 4.0](https://open-meteo.com/en/licence),
   from ECMWF IFS HRES open data. Downloaded through the free, non-commercial API tier for
   this non-commercial portfolio project.
-- The committed sample in `data/sample/raw/` is a verbatim extract of both sources under
-  the same licences.
+- ENS data: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) and the ECMWF terms
+  of use. ECMWF IFS ENS forecast data processed by dynamical.org from ECMWF Open Data.
+- The committed sample in `data/sample/raw/` is a verbatim extract of Energinet and
+  Open-Meteo data under the same licences.

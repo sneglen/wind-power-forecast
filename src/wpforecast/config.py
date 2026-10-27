@@ -78,9 +78,14 @@ class Issue:
 @dataclass(frozen=True)
 class Ensemble:
     source: str
+    dataset: str
+    start: dt.date
+    variables: tuple[str, ...]
     members: int
     resolution_deg: float
     step_h: int
+    max_lead_h: int
+    workers: int
 
 
 @dataclass(frozen=True)
@@ -312,6 +317,12 @@ def _validate(cfg: Config) -> None:
         "[nwp] max_lead_h does not cover max_horizon_h",
     )
 
+    ens = nwp.ensemble
+    _check(len(ens.variables) > 0, "[nwp.ensemble] variables must not be empty")
+    _check(ens.start <= data.end, "[nwp.ensemble] start is after [data] end")
+    _check(ens.max_lead_h % ens.step_h == 0, "[nwp.ensemble] max_lead_h must be k * step_h")
+    _check(ens.workers >= 1, "[nwp.ensemble] workers must be >= 1")
+
     _check(any(p.region == "onshore" for p in cfg.points.values()), "[points] need onshore points")
     for name, p in cfg.points.items():
         _check(
@@ -374,7 +385,12 @@ def load_config(path: str | Path) -> Config:
             raw,
             "nwp",
             variables=tuple(_table(raw, "nwp").get("variables", [])),
-            ensemble=_build(Ensemble, raw, "nwp.ensemble"),
+            ensemble=_build(
+                Ensemble,
+                raw,
+                "nwp.ensemble",
+                variables=tuple(_table(raw, "nwp.ensemble").get("variables", [])),
+            ),
         ),
         points=_parse_points(raw),
         target=_build(Target, raw, "target"),

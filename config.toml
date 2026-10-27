@@ -63,11 +63,17 @@ availability_lag_h = 7        # observed 6.1-6.5 h on Open-Meteo (2026-10-26/27)
 max_lead_h = 72
 
 [nwp.ensemble]
-# Extension A (Step 8): ECMWF IFS ENS via dynamical.org (dynamical-catalog).
+# Extension A (Step 8): ECMWF IFS ENS via dynamical.org (dynamical-catalog), CC BY 4.0.
+# Downloaded with `make ens`; only the values at [points] are kept.
 source = "dynamical.org"
+dataset = "ecmwf-ifs-ens-forecast-15-day-0-25-degree"
+start = 2024-04-01            # first 00 UTC run in the archive
+variables = ["wind_u_100m", "wind_v_100m"]
 members = 51
 resolution_deg = 0.25
-step_h = 3                    # interpolated to hourly
+step_h = 3                    # 3-hourly to 144 h; interpolated to hourly in Step 8
+max_lead_h = 72               # same reach as HRES
+workers = 4                   # runs fetched in parallel (~4 s each, one chunk per variable)
 
 # NWP extraction points (lat, lon). Onshore points use land grid cells, offshore points sea
 # cells (Open-Meteo `cell_selection`); every point is within 7 km of its grid cell.
