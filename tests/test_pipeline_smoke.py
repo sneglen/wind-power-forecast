@@ -28,7 +28,17 @@ def test_pipeline_end_to_end(cfg):
     q = fc[[qcol(x) for x in cfg.quantiles.levels]].to_numpy()
     assert (q[:, 1:] >= q[:, :-1]).all(), "quantiles must not cross"
 
-    assert set(fc["model"]) == {"climatology", "persistence", "new_reference"}
+    assert set(fc["model"]) == {
+        "climatology",
+        "persistence",
+        "new_reference",
+        "curve_frozen",
+        "curve_walk_forward",
+        "curve_rls",
+    }
+    assert fc.loc[fc["model"] == "curve_frozen", "period"].isin(["test", "stress"]).all()
+    tuning = json.loads((cfg.paths.outputs / pipeline.TUNING).read_text())
+    assert tuning["rls_forgetting"] in cfg.model.rls.forgetting_grid
     metrics = json.loads((cfg.paths.outputs / pipeline.METRICS).read_text())
     n_test_days = (cfg.dates.test_end - cfg.dates.test_start).days + 1
     assert metrics["n_hours"] == 24 * n_test_days
@@ -37,7 +47,13 @@ def test_pipeline_end_to_end(cfg):
         assert 0 < result["crps"] <= result["mae_median"] + 1e-12  # CRPS <= MAE of the median
     assert metrics["models"]["climatology"]["crps_skill"] == 0
     assert "| persistence |" in (cfg.paths.outputs / pipeline.SCORES).read_text()
-    for figure in (pipeline.RELIABILITY, pipeline.SKILL_BY_HORIZON):
+    figures = (
+        pipeline.RELIABILITY,
+        pipeline.SKILL_BY_HORIZON,
+        pipeline.CURVE_BY_SECTOR,
+        pipeline.CURVE_TRAJECTORY,
+    )
+    for figure in figures:
         assert (cfg.paths.figures / figure).stat().st_size > 0
 
 

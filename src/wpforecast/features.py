@@ -7,8 +7,10 @@ k = 14..37 (36 or 38 on DST days). Horizon k counts to the END of the hour-begin
 Columns (``KEYS``, inputs, ``TARGETS``):
 
 - keys: target day, period, issue time, target hour, horizon, ``in_product`` (hour of day D)
-- inputs, known at issue time: ``y_issue`` and ``capacity_issue_mw`` (last known hour),
-  ``run_utc`` and ``lead_h`` of the NWP run used, NWP columns ``<variable>@<point|region>``
+- inputs, known at issue time: ``y_issue`` and ``capacity_issue_mw`` at the last known hour
+  ``last_known_utc``, ``run_utc`` and ``lead_h`` of the NWP run used, NWP columns
+  ``<variable>@<point|region>`` for the target hour and ``<variable>@<region>@issue`` for
+  the last known hour (same run)
 - targets, revealed after the target hour: ``y`` = P / C, ``power_mw``, ``capacity_mw``,
   ``curtailed`` (day-ahead price <= ``[curtailment] da_price_max``)
 
@@ -195,7 +197,16 @@ def build_features(
     runs = choose_runs(cfg, rows, pd.DatetimeIndex(nwp["run_utc"].unique()))
     rows["run_utc"] = rows["issue_time_utc"].map(runs).astype(nwp["run_utc"].dtype)
     rows["lead_h"] = ((rows["time_utc"] + HOUR - rows["run_utc"]) / HOUR).astype("Int16")
-    rows = rows.merge(nwp_hourly(cfg, nwp), on=["run_utc", "time_utc"], how="left")
+    hourly = nwp_hourly(cfg, nwp)
+    rows = rows.merge(hourly, on=["run_utc", "time_utc"], how="left")
+
+    # The same run at the last known hour: lets a model compare its fit with y_issue.
+    regional = [c for c in hourly.columns if c.endswith(("@onshore", "@offshore"))]
+    at_issue = hourly[["run_utc", "time_utc", *regional]].rename(
+        columns={"time_utc": "last_known_utc"} | {c: f"{c}@issue" for c in regional}
+    )
+    rows["last_known_utc"] = known.astype(hourly["time_utc"].dtype)
+    rows = rows.merge(at_issue, on=["run_utc", "last_known_utc"], how="left")
     no_run = runs.isna().sum()
     if no_run:
         log.warning("features: %d issue times have no usable NWP run", no_run)

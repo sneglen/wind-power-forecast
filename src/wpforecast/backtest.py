@@ -13,8 +13,9 @@ At each issue time t0, in order:
 3. **predict**: the model sees the input columns of t0's rows only, never the targets.
 
 Models predict the quantiles of the CRPS grid (``wpforecast.scoring.crps_levels``), which
-contains the reporting levels. Quantile crossing is fixed by sorting. A model returns NaN
-where it cannot forecast; those rows are dropped with a warning.
+contains the reporting levels. A model with a ``point`` method also gives its point
+forecast (column ``point``); otherwise the median is used. Quantile crossing is fixed by
+sorting. A model returns NaN where it cannot forecast; those rows are dropped with a warning.
 """
 
 from __future__ import annotations
@@ -76,6 +77,7 @@ def run(
     inputs = input_columns(features)
     levels = crps_levels(cfg)  # contains the reporting levels; see wpforecast.scoring
     columns = [qcol(x) for x in levels]
+    median = qcol(0.5)
 
     frames, released, month = [], 0, None
     for n, issue in enumerate(issues):
@@ -92,7 +94,9 @@ def run(
         if q.shape != (len(rows), len(levels)):
             raise ValueError(f"{model.name}: predict returned {q.shape} for {len(rows)} rows")
         quantiles = pd.DataFrame(np.sort(q, axis=1), index=rows.index, columns=columns)
-        frames.append(pd.concat([rows[KEYS + TARGETS], quantiles], axis=1))
+        point = model.point(rows[inputs]) if hasattr(model, "point") else quantiles[median]
+        out = pd.concat([rows[KEYS + TARGETS], quantiles], axis=1)
+        frames.append(out.assign(point=np.asarray(point, dtype=float)))
 
     fc = pd.concat(frames, ignore_index=True)
     missing = fc[columns].isna().any(axis=1)

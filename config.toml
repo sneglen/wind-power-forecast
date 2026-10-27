@@ -125,10 +125,19 @@ walk_forward_refit = "monthly"
 min_error_samples = 30        # error quantiles at horizon k need this many past errors
 
 [model.rls]
-forgetting = 0.995            # placeholder: lambda tuned on validation; memory ~ 1/(1-lambda)
-delta = 100.0                 # initial covariance P0 = delta * I
-spline_knots = 6              # placeholder: B-spline basis of regional 100 m wind speed
-diurnal_harmonics = 2         # placeholder
+# Step 4: adaptive power curve. Forgetting lambda acts per hourly row: memory ~ 1/(1-lambda)
+# rows, ~37 rows per day. The value is chosen on the validation period from this grid
+# (RMSE of the point forecast); 1.0 is the frozen / walk-forward twin.
+forgetting_grid = [0.999, 0.9995, 0.9998, 0.9999, 1.0]
+delta = 100.0                 # regularised start P0 = delta * I; trace(P) bounded by trace(P0)
+spline_knots = 6              # interior knots of the cubic B-spline in 100 m wind speed
+spline_degree = 3
+# Knots spread uniformly over [0, speed_max] per region; faster is clamped. Regional means
+# rarely pass 17 m/s onshore (99.9 % quantile, 2024-25) but reach 26 m/s offshore.
+speed_max_ms = { onshore = 20.0, offshore = 28.0 }
+diurnal_harmonics = 2         # sin/cos of 2 pi m h / 24, m = 1..2 (UTC hour)
+horizon_blocks = [1, 7, 13, 19, 25, 31]  # first k of each block of the correction a_k
+error_window_days = 90        # past errors used for the empirical predictive quantiles
 
 [model.quantreg]
 window_days = 180             # rolling window

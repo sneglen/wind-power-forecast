@@ -6,8 +6,9 @@ Day-ahead forecasts of DK1 wind power as calibrated, self-adapting predictive di
 (recursive least squares, time-adaptive quantile regression, bounded distributions), and what
 that uncertainty is worth in the DK1 single-price imbalance market. Data: 2024–2026.
 
-> **Status:** Step 3 — baselines. The pipeline runs end to end on real DK1 data with three
-> reference forecasts and a shared scoring module; adaptive models follow.
+> **Status:** Step 4 — adaptive power curve (RLS). The pipeline runs end to end on real DK1
+> data with three references and frozen, walk-forward and recursive power curves;
+> probabilistic models follow.
 
 Developed with AI assistance (Claude Code); modelling choices and their reasons are mine and
 recorded in [DECISIONS.md](DECISIONS.md).
@@ -120,7 +121,35 @@ _First scores on the full data: pending the download (Step 1)._
 
 ### Recursive least squares
 
-_Pending._
+The point forecast is a power curve in the spirit of WPPT, linear in its parameters after a
+basis expansion (`src/wpforecast/models/power_curve.py`):
+
+p̂(t+k | t) = φ(t+k)ᵀ β̂ₜ + a_k · (pₜ − φ(t)ᵀ β̂ₜ)
+
+- **φ:** cubic B-splines of the onshore and offshore mean 100 m wind speed, each times
+  [1, cos θ, sin θ] of the regional direction, plus diurnal harmonics. That is 64
+  parameters, one curve pooled over all horizons.
+- **a_k:** corrects the curve's error at the last known hour pₜ. It is estimated per block
+  of horizons and fades with k.
+
+β̂ is updated by recursive least squares with exponential forgetting:
+
+- K = P φ / (λ + φᵀ P φ)
+- β̂ ← β̂ + K (y − φᵀ β̂)
+- P ← (P − K φᵀ P) / λ
+
+This is a Kalman filter for parameters that drift as a random walk. Dividing P by λ inflates
+the parameter uncertainty at every step, so old observations lose weight geometrically, and
+the effective memory is about 1/(1 − λ) observations. With ~37 hourly rows per day,
+λ = 0.9995 remembers about 54 days. The start is regularised (P₀ = δI), and the trace of P is
+bounded so that the covariance cannot wind up in calm spells.
+
+With λ = 1 the recursion gives exactly the ridge-regularised least-squares fit. That is the
+frozen twin (fitted once on the training and validation data) and the monthly walk-forward
+refit, so all three adaptivity regimes run the same code. λ is chosen on the validation
+period.
+
+_Results on the full data: pending the download (Step 1)._
 
 ### Time-adaptive quantile regression
 
@@ -177,7 +206,8 @@ src/wpforecast/
   data/                   eds.py · openmeteo.py · capacity.py · build.py · checks.py
   features.py             issue times, horizons, periods; the issue-time feature table
   backtest.py             event loop: observe -> fit/update -> predict
-  models/                 forecast models (baselines.py: climatology, persistence, new reference)
+  models/                 baselines.py (climatology, persistence, new reference),
+                          power_curve.py (B-spline curve, RLS with forgetting)
   scoring.py              CRPS, pinball loss, coverage, MAE, skill
   __main__.py             CLI: wpforecast <stage> --config ...
 scripts/                  utilities: CI watcher

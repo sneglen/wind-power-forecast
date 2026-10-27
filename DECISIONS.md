@@ -261,3 +261,33 @@ that every model forecast, with and without curtailed hours; skill is
 1 − CRPS / CRPS(climatology), overall and by horizon.
 **Why:** one forecast serves both scores without interpolating quantiles; comparing models
 on different hours would bias skill scores.
+
+### D-028 · 2026-10-27 · Power curve: B-splines x direction, RLS with forgetting
+**Decision:** `models/power_curve.py` models y = φᵀβ with φ = cubic B-splines of the
+regional 100 m speed (6 interior knots over 0–20 m/s onshore, 0–28 m/s offshore), each times
+[1, cos θ, sin θ] of the regional direction, plus two diurnal harmonics (64 parameters), one
+curve pooled over horizons. β is estimated by RLS with exponential forgetting λ per hourly
+row, P0 = δI (δ = 100), and trace(P) ≤ trace(P0). The frozen and walk-forward twins are the
+same code with λ = 1, which equals ridge regression with penalty 1/δ (unit-tested). λ is
+chosen on the validation period from `forgetting_grid` by point RMSE (`outputs/tuning.json`).
+Point forecasts are clipped to [0, 1].
+**Why:** the plan's WPPT-style curve; one implementation for the three adaptivity regimes
+makes the comparison exact. Separate speed ranges put the knots where the data are: regional
+means pass 17.7 m/s onshore in only 0.1 % of hours (2024-03 to 2025-06), but reach 26 m/s
+offshore. A common 0–25 m/s range left the onshore splines above 18 m/s to the prior.
+**Evidence:** on the HRES data downloaded so far (test 2025-03-01 to 06-08) the curves
+reach an RMSE of 7.7 % of capacity and 64 % CRPS skill over climatology. λ = 1 wins on
+validation, so before Thor there is no drift for the forgetting to follow.
+**Rejected:** the conditional-parametric model of Nielsen et al. (2000), the plan's optional
+variant (more machinery for a direction effect that turns out small); knots at data
+quantiles (they would move between refits).
+
+### D-029 · 2026-10-27 · Short-horizon correction and error quantiles from prequential residuals
+**Decision:** p̂(t+k|t) = φ(t+k)ᵀβ̂ + a_k (p_t − φ(t)ᵀβ̂), where φ(t) uses the same run's NWP
+at the last known hour (new feature columns `<variable>@<region>@issue`). a_k is the
+least-squares slope of the curve's target-hour residual on its issue-hour residual, one per
+horizon block (k = 1–6, 7–12, … 31–38), accumulated with the same forgetting. Both a_k and the
+empirical error quantiles (by k, last 90 days) use residuals computed with the parameters as
+they were before those hours were observed.
+**Why:** the plan's formula; prequential residuals keep the correction and the interim
+predictive distribution out-of-sample. Step 5 replaces the error quantiles.

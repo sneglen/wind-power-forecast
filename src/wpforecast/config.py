@@ -135,10 +135,14 @@ class Baselines:
 
 @dataclass(frozen=True)
 class RLS:
-    forgetting: float
+    forgetting_grid: tuple[float, ...]
     delta: float
     spline_knots: int
+    spline_degree: int
+    speed_max_ms: dict[str, float]  # per region
     diurnal_harmonics: int
+    horizon_blocks: tuple[int, ...]
+    error_window_days: int
 
 
 @dataclass(frozen=True)
@@ -346,9 +350,27 @@ def _validate(cfg: Config) -> None:
 
     m = cfg.model
     _check(m.baselines.min_error_samples >= 1, "[model.baselines] min_error_samples must be >= 1")
-    for name, lam in (("rls", m.rls.forgetting), ("logitnormal", m.logitnormal.forgetting)):
+    rls = m.rls
+    _check(len(rls.forgetting_grid) > 0, "[model.rls] forgetting_grid must not be empty")
+    for name, lam in [("rls", x) for x in rls.forgetting_grid] + [
+        ("logitnormal", m.logitnormal.forgetting)
+    ]:
         _check(0 < lam <= 1, f"[model.{name}] forgetting must be in (0, 1]")
-    _check(m.rls.delta > 0, "[model.rls] delta must be > 0")
+    _check(rls.delta > 0, "[model.rls] delta must be > 0")
+    _check(rls.spline_knots >= 1 and rls.spline_degree >= 1, "[model.rls] spline too small")
+    _check(
+        set(rls.speed_max_ms) == {"onshore", "offshore"}
+        and all(v > 0 for v in rls.speed_max_ms.values()),
+        "[model.rls] speed_max_ms needs positive onshore and offshore values",
+    )
+    blocks = rls.horizon_blocks
+    _check(
+        len(blocks) > 0
+        and blocks[0] == 1
+        and all(a < b for a, b in zip(blocks, blocks[1:], strict=False)),
+        "[model.rls] horizon_blocks must start at 1 and increase",
+    )
+    _check(rls.error_window_days >= 1, "[model.rls] error_window_days must be >= 1")
     _check(m.quantreg.refit_days <= m.quantreg.window_days, "[model.quantreg] refit > window")
     _check(m.logitnormal.nu > 0, "[model.logitnormal] nu must be > 0")
     _check(0 < m.logitnormal.epsilon < 0.5, "[model.logitnormal] epsilon must be in (0, 0.5)")
@@ -414,7 +436,16 @@ def load_config(path: str | Path) -> Config:
         ),
         model=Model(
             baselines=_build(Baselines, raw, "model.baselines"),
-            rls=_build(RLS, raw, "model.rls"),
+            rls=_build(
+                RLS,
+                raw,
+                "model.rls",
+                forgetting_grid=tuple(_table(raw, "model.rls").get("forgetting_grid", [])),
+                speed_max_ms={
+                    k: float(v) for k, v in _table(raw, "model.rls.speed_max_ms").items()
+                },
+                horizon_blocks=tuple(_table(raw, "model.rls").get("horizon_blocks", [])),
+            ),
             quantreg=_build(QuantReg, raw, "model.quantreg"),
             logitnormal=_build(LogitNormal, raw, "model.logitnormal"),
             gbm=_build(GBM, raw, "model.gbm"),

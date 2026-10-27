@@ -12,10 +12,12 @@ product (local day D) is k = 14..37. Scores cover the product hours only.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from wpforecast import backtest, data, features, scoring
@@ -23,14 +25,19 @@ from wpforecast.backtest import Model
 from wpforecast.config import Config
 from wpforecast.data import checks, ens
 from wpforecast.models.baselines import Climatology, NewReference, Persistence
+from wpforecast.models.power_curve import REGIONS, PowerCurve
 
 log = logging.getLogger(__name__)
 
 FORECASTS = "forecasts.parquet"
 METRICS = "metrics.json"
 SCORES = "scores.md"
+TUNING = "tuning.json"
+CURVE_PARAMS = "power_curve_params.parquet"
 RELIABILITY = "reliability.png"
 SKILL_BY_HORIZON = "crps_skill_by_horizon.png"
+CURVE_BY_SECTOR = "power_curve_by_sector.png"
+CURVE_TRAJECTORY = "power_curve_trajectory.png"
 REFERENCE = "climatology"
 
 
@@ -63,39 +70,84 @@ def run_features(cfg: Config) -> Path:
     return features.run(cfg)
 
 
-def models(cfg: Config) -> list[tuple[Model, str]]:
-    """Every model in the backtest, with its adaptivity regime."""
+def power_curve(cfg: Config, name: str, forgetting: float) -> PowerCurve:
+    return PowerCurve(
+        name,
+        cfg.model.rls,
+        forgetting,
+        scoring.crps_levels(cfg),
+        cfg.model.baselines.min_error_samples,
+    )
+
+
+def tune_forgetting(cfg: Config, table: pd.DataFrame) -> tuple[float, dict[str, float]]:
+    """RLS forgetting factor with the lowest point RMSE on the validation product hours."""
+    rmse = {}
+    for lam in cfg.model.rls.forgetting_grid:
+        fc = backtest.run(
+            cfg,
+            power_curve(cfg, "tuning", lam),
+            table,
+            "recursive",
+            cfg.dates.train_start,
+            cfg.dates.train_end,
+        )
+        val = fc[(fc["period"] == "validation") & fc["in_product"]].dropna(subset=["y"])
+        rmse[f"{lam:g}"] = float(np.sqrt(((val["y"] - val["point"]) ** 2).mean()))
+    best = min(rmse, key=rmse.get)
+    log.info("tune: RLS forgetting %s (validation RMSE %s)", best, rmse)
+    return float(best), rmse
+
+
+def models(cfg: Config, forgetting: float) -> list[tuple[Model, str, dt.date]]:
+    """Every model in the backtest, with its adaptivity regime and first target day."""
     levels = scoring.crps_levels(cfg)
     n = cfg.model.baselines.min_error_samples
+    first = cfg.dates.train_start
     return [
-        (Climatology(levels), "walk_forward"),
-        (Persistence(levels, n), "walk_forward"),
-        (NewReference(levels, n, cfg.issue.power_lag_h), "walk_forward"),
+        (Climatology(levels), "walk_forward", first),
+        (Persistence(levels, n), "walk_forward", first),
+        (NewReference(levels, n, cfg.issue.power_lag_h), "walk_forward", first),
+        (power_curve(cfg, "curve_frozen", 1.0), "frozen", cfg.dates.test_start),
+        (power_curve(cfg, "curve_walk_forward", 1.0), "walk_forward", first),
+        (power_curve(cfg, "curve_rls", forgetting), "recursive", first),
     ]
 
 
 def run_backtest(cfg: Config) -> Path:
-    """Forecast every target day from ``train_start`` with every model."""
+    """Tune the RLS forgetting factor, then forecast every target day with every model."""
     table = features.read(cfg)
     last = pd.to_datetime(table["target_day"]).dt.date.max()
-    fc = pd.concat(
-        [
-            backtest.run(cfg, model, table, regime, cfg.dates.train_start, last)
-            for model, regime in models(cfg)
-        ],
-        ignore_index=True,
+    forgetting, rmse = tune_forgetting(cfg, table)
+    out_dir = cfg.paths.outputs
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / TUNING).write_text(
+        json.dumps({"rls_forgetting": forgetting, "validation_rmse": rmse}, indent=2) + "\n"
     )
-    out = cfg.paths.outputs / FORECASTS
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fc.to_parquet(out, index=False)
+
+    frames, params = [], []
+    for model, regime, first in models(cfg, forgetting):
+        frames.append(backtest.run(cfg, model, table, regime, first, last))
+        if isinstance(model, PowerCurve):
+            params.append(_trajectory(model))
+    fc = pd.concat(frames, ignore_index=True)
+    fc.to_parquet(out_dir / FORECASTS, index=False)
+    pd.concat(params, ignore_index=True).to_parquet(out_dir / CURVE_PARAMS, index=False)
     log.info(
         "backtest: %d models, %d target days, %d rows -> %s",
         fc["model"].nunique(),
         fc["target_day"].nunique(),
         len(fc),
-        out,
+        out_dir / FORECASTS,
     )
-    return out
+    return out_dir / FORECASTS
+
+
+def _trajectory(model: PowerCurve) -> pd.DataFrame:
+    """beta after every update, one row per update."""
+    times, betas = zip(*model.history, strict=True)
+    frame = pd.DataFrame(np.vstack(betas), columns=[f"b{i}" for i in range(len(betas[0]))])
+    return frame.assign(model=model.name, time_utc=list(times))
 
 
 def _scored_rows(cfg: Config, fc: pd.DataFrame) -> pd.DataFrame:
@@ -155,15 +207,16 @@ def score_table(metrics: dict) -> str:
         f"{metrics['n_hours']} product hours ({metrics['n_curtailed']} curtailed). "
         "y = P / C; scores in units of capacity.",
         "",
-        "| model | CRPS | CRPS skill vs climatology | mean pinball | MAE (median) "
-        "| CRPS, excl. curtailed |",
-        "|---|---|---|---|---|---|",
+        "| model | CRPS | CRPS skill vs climatology | mean pinball | RMSE (point) "
+        "| MAE (point) | CRPS, excl. curtailed |",
+        "|---|---|---|---|---|---|---|",
     ]
     for name, r in metrics["models"].items():
         skill = r.get("crps_skill", float("nan"))
         lines.append(
             f"| {name} | {r['crps']:.4f} | {skill:+.1%} | {r['mean_pinball']:.4f} "
-            f"| {r['mae_median']:.4f} | {r['excl_curtailed']['crps']:.4f} |"
+            f"| {r['rmse_point']:.4f} | {r['mae_point']:.4f} "
+            f"| {r['excl_curtailed']['crps']:.4f} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -205,8 +258,78 @@ def run_figures(cfg: Config) -> Path:
     fig.tight_layout()
     fig.savefig(out_dir / SKILL_BY_HORIZON, dpi=150)
     plt.close(fig)
+
+    params = cfg.paths.outputs / CURVE_PARAMS
+    if params.exists():
+        _curve_figures(cfg, pd.read_parquet(params), out_dir, plt)
     log.info("figures: -> %s", out_dir)
     return out_dir
+
+
+SECTORS = np.arange(0, 360, 45)
+
+
+def _curve(
+    cfg: Config, beta: np.ndarray, onshore: np.ndarray, ratio: float, direction: float
+) -> np.ndarray:
+    """The curve along onshore speed v, offshore speed ratio * v, diurnal terms at mean 0."""
+    basis = power_curve(cfg, "figure", 1.0).basis
+    n = len(onshore)
+    phi = basis.matrix(
+        {"onshore": onshore, "offshore": ratio * onshore},
+        {r: np.full(n, direction) for r in REGIONS},
+        np.zeros(n),
+    )
+    phi[:, basis.size - 2 * basis.harmonics :] = 0.0
+    return phi @ beta
+
+
+def _speed_path(cfg: Config) -> tuple[np.ndarray, float]:
+    """Onshore speeds up to the 99.9 % quantile seen, and the median offshore/onshore ratio."""
+    on, off = (f"wind_speed_100m@{r}" for r in REGIONS)
+    table = pd.read_parquet(cfg.paths.interim / features.FEATURES, columns=[on, off]).dropna()
+    table = table[table[on] > 1.0]
+    ratio = float((table[off] / table[on]).median())
+    return np.linspace(0, table[on].quantile(0.999), 101), ratio
+
+
+def _curve_figures(cfg: Config, params: pd.DataFrame, out_dir: Path, plt) -> None:
+    beta_cols = [c for c in params.columns if c.startswith("b")]
+    speed, ratio = _speed_path(cfg)
+
+    fig, axes = plt.subplots(1, 2, figsize=(9, 3.8), sharey=True)
+    for ax, name in zip(axes, ("curve_frozen", "curve_rls"), strict=True):
+        rows = params[params["model"] == name]
+        if rows.empty:
+            continue
+        beta = rows[beta_cols].iloc[-1].to_numpy()
+        for sector in SECTORS:
+            ax.plot(speed, _curve(cfg, beta, speed, ratio, sector), lw=1.2, label=f"{sector}°")
+        when = pd.Timestamp(rows["time_utc"].iloc[-1]).date()
+        ax.set(
+            xlabel=f"onshore 100 m speed (m/s), offshore = {ratio:.2f} x", title=f"{name}, {when}"
+        )
+    axes[0].set_ylabel("y = P / C")
+    axes[1].legend(title="from", fontsize=7, frameon=False, ncol=2)
+    fig.tight_layout()
+    fig.savefig(out_dir / CURVE_BY_SECTOR, dpi=150)
+    plt.close(fig)
+
+    rows = params[params["model"] == "curve_rls"]
+    if rows.empty:
+        return
+    fig, ax = plt.subplots(figsize=(8, 3.5))
+    for v in (6.0, 9.0, 12.0):
+        level = [
+            np.mean([_curve(cfg, b, np.array([v]), ratio, s)[0] for s in SECTORS])
+            for b in rows[beta_cols].to_numpy()
+        ]
+        ax.plot(pd.to_datetime(rows["time_utc"]), level, lw=1, label=f"{v:g} m/s")
+    ax.set(ylabel="curve, mean over directions", title="RLS power curve over time")
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(out_dir / CURVE_TRAJECTORY, dpi=150)
+    plt.close(fig)
 
 
 STAGES = {

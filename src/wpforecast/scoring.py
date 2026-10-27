@@ -3,7 +3,8 @@
 Forecasts are quantiles on the CRPS grid tau = 1/n .. (n-1)/n (``[quantiles] crps_levels``),
 which contains the 19 reporting levels. CRPS is approximated from all of them (scoringrules
 ``crps_quantile`` = 2 x mean pinball loss); pinball loss and coverage use the reporting
-levels; MAE is that of the median.
+levels; MAE is that of the median and of the point forecast (the median for models without
+one), RMSE that of the point forecast.
 """
 
 from __future__ import annotations
@@ -48,6 +49,8 @@ def scores(cfg: Config, fc: pd.DataFrame) -> dict:
         "crps": float(crps(y, q_grid, grid).mean()),
         "mean_pinball": float(pinball(y, q_report, report).mean()),
         "mae_median": float(np.abs(y - fc[qcol(0.5)].to_numpy()).mean()),
+        "mae_point": float(np.abs(y - fc["point"].to_numpy()).mean()),
+        "rmse_point": float(np.sqrt(((y - fc["point"].to_numpy()) ** 2).mean())),
         "coverage": dict(
             zip(map(str, report), (y[:, None] <= q_report).mean(axis=0).tolist(), strict=True)
         ),
