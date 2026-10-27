@@ -596,6 +596,19 @@ wheels = [
 ]
 
 [[package]]
+name = "scoringrules"
+version = "0.11.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e2/2c/645ef0174c26c2eccffc65596a29f2b3eb61daf441ac1ba79dd71611cc14/scoringrules-0.11.0.tar.gz", hash = "sha256:434d53c292bc319d080657dfdda99a3f6a5ceac45687d0f1218f8180e02a259d", size = 194532, upload-time = "2026-06-06T21:56:02.547Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/c2/646ebbc8a8b9df9244a76c8a523f7e768857ce3abd1c6bd4740470fd6b86/scoringrules-0.11.0-py3-none-any.whl", hash = "sha256:6371a36c856a8055b6751dc401a7e20000f0fd2886d602c90ee35ee0bc8ebb4e", size = 96450, upload-time = "2026-06-06T21:56:01.178Z" },
+]
+
+[[package]]
 name = "six"
 version = "1.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -659,6 +672,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "scipy" },
+    { name = "scoringrules" },
     { name = "tenacity" },
     { name = "xarray" },
 ]
@@ -679,6 +693,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.2" },
     { name = "pyarrow", specifier = ">=17" },
     { name = "scipy", specifier = ">=1.14" },
+    { name = "scoringrules", specifier = ">=0.11.0" },
     { name = "tenacity", specifier = ">=9.0" },
     { name = "xarray", specifier = ">=2024.9" },
 ]

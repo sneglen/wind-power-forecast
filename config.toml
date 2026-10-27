@@ -120,8 +120,9 @@ crps_levels = 99              # CRPS approximated from tau = 0.01 .. 0.99
 regimes = ["frozen", "walk_forward", "recursive"]
 walk_forward_refit = "monthly"
 
-[model.climatology]
-window_days = 28              # Step 0 benchmark: rolling empirical quantiles of past production
+[model.baselines]
+# Step 3: climatology, persistence and the new reference, refit monthly on all known data.
+min_error_samples = 30        # error quantiles at horizon k need this many past errors
 
 [model.rls]
 forgetting = 0.995            # placeholder: lambda tuned on validation; memory ~ 1/(1-lambda)

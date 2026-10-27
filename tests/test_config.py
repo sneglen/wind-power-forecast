@@ -33,7 +33,7 @@ def test_smoke_config_inherits_and_overrides():
     base, smoke = load_config(CONFIG), load_config(SMOKE)
     assert smoke.paths.raw == Path("data/sample/raw")
     assert smoke.data.offline
-    assert smoke.model.climatology.window_days == 5
+    assert smoke.model.baselines.min_error_samples == 3
     assert smoke.quantiles == base.quantiles
     assert smoke.points == base.points
     assert smoke.model.rls == base.model.rls
@@ -50,6 +50,8 @@ def _write(tmp_path: Path, extra: str) -> Path:
     [
         ("[quantiles]\nlevels = [0.5, 0.1]", "increasing"),
         ("[quantiles]\nlevels = [0.0, 0.5]", "strictly inside"),
+        ("[quantiles]\nlevels = [0.125, 0.5]", "CRPS grid"),
+        ("[nwp.ensemble]\nmax_lead_h = 71", "step_h"),
         ("[dates]\ntest_start = 2023-01-01", "train_start <= validation_start"),
         ("[dates]\nstress_end = 2026-01-01", "stress_start <= stress_end"),
         ('[issue]\ntime_local = "13:00"', "precede gate closure"),

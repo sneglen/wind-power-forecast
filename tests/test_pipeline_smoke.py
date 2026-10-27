@@ -5,8 +5,8 @@ import pandas as pd
 import pytest
 
 from wpforecast import features, pipeline
-from wpforecast.backtest import qcol
 from wpforecast.config import Config
+from wpforecast.scoring import qcol
 
 
 @pytest.mark.smoke
@@ -21,16 +21,24 @@ def test_pipeline_end_to_end(cfg):
     assert fc["horizon_h"].between(1, 37).all()
     product = fc[fc["in_product"]]
     assert product["horizon_h"].between(14, 37).all()
-    dst_day = product[product["target_day"].astype(str) == "2025-03-30"]
+    dst_day = product[
+        (product["target_day"].astype(str) == "2025-03-30") & (product["model"] == "climatology")
+    ]
     assert len(dst_day) == 23 and dst_day["horizon_h"].max() == 36
     q = fc[[qcol(x) for x in cfg.quantiles.levels]].to_numpy()
     assert (q[:, 1:] >= q[:, :-1]).all(), "quantiles must not cross"
 
+    assert set(fc["model"]) == {"climatology", "persistence", "new_reference"}
     metrics = json.loads((cfg.paths.outputs / pipeline.METRICS).read_text())
     n_test_days = (cfg.dates.test_end - cfg.dates.test_start).days + 1
     assert metrics["n_hours"] == 24 * n_test_days
-    assert metrics["mean_pinball"] > 0
-    assert (cfg.paths.figures / pipeline.RELIABILITY).stat().st_size > 0
+    for result in metrics["models"].values():
+        assert result["n_hours"] == metrics["n_hours"], "models are scored on the same hours"
+        assert 0 < result["crps"] <= result["mae_median"] + 1e-12  # CRPS <= MAE of the median
+    assert metrics["models"]["climatology"]["crps_skill"] == 0
+    assert "| persistence |" in (cfg.paths.outputs / pipeline.SCORES).read_text()
+    for figure in (pipeline.RELIABILITY, pipeline.SKILL_BY_HORIZON):
+        assert (cfg.paths.figures / figure).stat().st_size > 0
 
 
 def _forecast_after_corrupting(cfg: Config, since: pd.Timestamp) -> pd.DataFrame:

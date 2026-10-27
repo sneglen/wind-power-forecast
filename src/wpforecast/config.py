@@ -129,8 +129,8 @@ class Adaptivity:
 
 
 @dataclass(frozen=True)
-class Climatology:
-    window_days: int
+class Baselines:
+    min_error_samples: int
 
 
 @dataclass(frozen=True)
@@ -164,7 +164,7 @@ class GBM:
 
 @dataclass(frozen=True)
 class Model:
-    climatology: Climatology
+    baselines: Baselines
     rls: RLS
     quantreg: QuantReg
     logitnormal: LogitNormal
@@ -333,14 +333,19 @@ def _validate(cfg: Config) -> None:
     _check(len(q) > 0, "[quantiles] levels must not be empty")
     _check(all(0 < x < 1 for x in q), "[quantiles] levels must lie strictly inside (0, 1)")
     _check(all(a < b for a, b in zip(q, q[1:], strict=False)), "[quantiles] must be increasing")
+    n = cfg.quantiles.crps_levels + 1
     _check(cfg.quantiles.crps_levels >= 2, "[quantiles] crps_levels must be >= 2")
+    _check(
+        all(abs(x * n - round(x * n)) < 1e-9 for x in q),
+        "[quantiles] levels must lie on the CRPS grid 1/n .. (n-1)/n, n = crps_levels + 1",
+    )
 
     _check(
         set(cfg.adaptivity.regimes) <= set(REGIMES), f"[adaptivity] regimes must be in {REGIMES}"
     )
 
     m = cfg.model
-    _check(m.climatology.window_days >= 1, "[model.climatology] window_days must be >= 1")
+    _check(m.baselines.min_error_samples >= 1, "[model.baselines] min_error_samples must be >= 1")
     for name, lam in (("rls", m.rls.forgetting), ("logitnormal", m.logitnormal.forgetting)):
         _check(0 < lam <= 1, f"[model.{name}] forgetting must be in (0, 1]")
     _check(m.rls.delta > 0, "[model.rls] delta must be > 0")
@@ -408,7 +413,7 @@ def load_config(path: str | Path) -> Config:
             regimes=tuple(_table(raw, "adaptivity").get("regimes", [])),
         ),
         model=Model(
-            climatology=_build(Climatology, raw, "model.climatology"),
+            baselines=_build(Baselines, raw, "model.baselines"),
             rls=_build(RLS, raw, "model.rls"),
             quantreg=_build(QuantReg, raw, "model.quantreg"),
             logitnormal=_build(LogitNormal, raw, "model.logitnormal"),

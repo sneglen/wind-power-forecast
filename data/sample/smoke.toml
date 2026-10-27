@@ -29,5 +29,5 @@ stress_end = 2025-03-31
 start = 2025-03-20
 end = 2025-03-27
 
-[model.climatology]
-window_days = 5
+[model.baselines]
+min_error_samples = 3         # the sample has only a few days per horizon

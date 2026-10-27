@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from wpforecast import backtest, features
+from wpforecast import backtest, features, scoring
 from wpforecast.config import Config
 
 DAYS = list(pd.date_range("2025-01-20", "2025-02-10", freq="D").date)
@@ -28,7 +28,7 @@ class Spy:
 
     def __init__(self, cfg: Config) -> None:
         self.lag = features.HOUR * (1 + cfg.issue.power_lag_h)
-        self.levels = len(cfg.quantiles.levels)
+        self.levels = len(scoring.crps_levels(cfg))
         self.seen = pd.DataFrame()
         self.fits, self.updates = 0, 0
 
@@ -61,7 +61,7 @@ def test_event_loop(cfg, regime, fits, updates):
     fc = backtest.run(cfg, spy, _features(cfg), regime, start, DAYS[-1])
     assert (spy.fits, spy.updates) == (fits, updates)
     assert fc["target_day"].min() == start and fc["target_day"].max() == DAYS[-1]
-    q = fc[[backtest.qcol(x) for x in cfg.quantiles.levels]].to_numpy()
+    q = fc[[scoring.qcol(x) for x in scoring.crps_levels(cfg)]].to_numpy()
     assert (np.diff(q, axis=1) >= 0).all(), "quantile crossing must be fixed by sorting"
 
 

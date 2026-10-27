@@ -6,8 +6,8 @@ Day-ahead forecasts of DK1 wind power as calibrated, self-adapting predictive di
 (recursive least squares, time-adaptive quantile regression, bounded distributions), and what
 that uncertainty is worth in the DK1 single-price imbalance market. Data: 2024–2026.
 
-> **Status:** Step 2 — forecast problem, information set and backtest harness. The pipeline
-> runs end to end on real DK1 data with a climatology benchmark; models follow.
+> **Status:** Step 3 — baselines. The pipeline runs end to end on real DK1 data with three
+> reference forecasts and a shared scoring module; adaptive models follow.
 
 Developed with AI assistance (Claude Code); modelling choices and their reasons are mine and
 recorded in [DECISIONS.md](DECISIONS.md).
@@ -93,7 +93,30 @@ so horizon and diurnal effects cannot be separated.
 
 ### Benchmarks
 
-_Pending._
+Every skill score is measured against three references, refit monthly on everything known
+at the issue time (`src/wpforecast/models/baselines.py`):
+
+| Reference | Point forecast ŷ(t+k \| t) | Predictive distribution |
+|---|---|---|
+| Climatology | — | empirical quantiles of all past y |
+| Persistence | y(t), the last known hour | ŷ + empirical quantiles of past errors at horizon k |
+| New reference (Nielsen et al., 1998) | a_k y(t) + (1 − a_k) ȳ, a_k = corr(y(t), y(t+k)) | ŷ + error quantiles at k |
+
+The new reference is ENFOR's own benchmark: it blends persistence and the mean with the
+weight that minimises the squared error at each horizon. With the true a_k it is never worse
+than either of them in mean squared error, which makes it the fairest reference at short
+horizons.
+
+Scores (`src/wpforecast/scoring.py`) cover the day-ahead product hours of the test year:
+- CRPS, approximated from 99 quantiles (τ = 0.01 … 0.99);
+- pinball loss and coverage on the 19 reporting levels;
+- MAE of the median;
+- skill = 1 − CRPS / CRPS(climatology), overall and by horizon.
+
+All models are scored on the same hours, with and without curtailed hours. `make evaluate`
+writes `outputs/scores.md`.
+
+_First scores on the full data: pending the download (Step 1)._
 
 ### Recursive least squares
 
@@ -154,7 +177,8 @@ src/wpforecast/
   data/                   eds.py · openmeteo.py · capacity.py · build.py · checks.py
   features.py             issue times, horizons, periods; the issue-time feature table
   backtest.py             event loop: observe -> fit/update -> predict
-  models/                 forecast models (baselines.py: climatology)
+  models/                 forecast models (baselines.py: climatology, persistence, new reference)
+  scoring.py              CRPS, pinball loss, coverage, MAE, skill
   __main__.py             CLI: wpforecast <stage> --config ...
 scripts/                  utilities: CI watcher
 tests/                    unit tests, look-ahead test, end-to-end smoke test
@@ -174,6 +198,8 @@ Design choices, with reasons and rejected alternatives, are recorded in
 
 ## References
 
+- T. S. Nielsen, A. Joensen, H. Madsen, L. Landberg, G. Giebel (1998). A new reference for
+  wind power forecasting. *Wind Energy* 1(1).
 - H. A. Nielsen, H. Madsen, T. S. Nielsen (2006). Using quantile regression to extend an
   existing wind power forecasting system with probabilistic forecasts. *Wind Energy* 9(1–2).
 - J. K. Møller, H. A. Nielsen, H. Madsen (2008). Time-adaptive quantile regression.

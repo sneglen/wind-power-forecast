@@ -12,8 +12,9 @@ At each issue time t0, in order:
      since the previous issue time (prequential: predict, then update);
 3. **predict**: the model sees the input columns of t0's rows only, never the targets.
 
-Quantile crossing is fixed by sorting. A model returns NaN where it cannot forecast; those
-rows are dropped with a warning.
+Models predict the quantiles of the CRPS grid (``wpforecast.scoring.crps_levels``), which
+contains the reporting levels. Quantile crossing is fixed by sorting. A model returns NaN
+where it cannot forecast; those rows are dropped with a warning.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ import pandas as pd
 
 from wpforecast.config import REGIMES, Config
 from wpforecast.features import HOUR, KEYS, TARGETS, input_columns
+from wpforecast.scoring import crps_levels, qcol
 
 log = logging.getLogger(__name__)
 
@@ -41,12 +43,7 @@ class Model(Protocol):
         """Absorb rows released since the previous issue time."""
 
     def predict(self, inputs: pd.DataFrame) -> np.ndarray:
-        """Quantiles, shape (rows, levels), for the rows of one issue time."""
-
-
-def qcol(level: float) -> str:
-    """Column name holding the forecast of quantile ``level``."""
-    return f"q{level:g}"
+        """Quantiles on the CRPS grid, shape (rows, levels), for the rows of one issue time."""
 
 
 def trainable(cfg: Config, features: pd.DataFrame) -> pd.DataFrame:
@@ -77,7 +74,8 @@ def run(
     known_at = learn["known_at"].dt.tz_convert(None).to_numpy()  # naive UTC for searchsorted
     by_issue = features.groupby("issue_time_utc", sort=False)
     inputs = input_columns(features)
-    levels = cfg.quantiles.levels
+    levels = crps_levels(cfg)  # contains the reporting levels; see wpforecast.scoring
+    columns = [qcol(x) for x in levels]
 
     frames, released, month = [], 0, None
     for n, issue in enumerate(issues):
@@ -93,12 +91,11 @@ def run(
         q = np.asarray(model.predict(rows[inputs]), dtype=float)
         if q.shape != (len(rows), len(levels)):
             raise ValueError(f"{model.name}: predict returned {q.shape} for {len(rows)} rows")
-        out = rows[KEYS + TARGETS].copy()
-        out[[qcol(x) for x in levels]] = np.sort(q, axis=1)
-        frames.append(out)
+        quantiles = pd.DataFrame(np.sort(q, axis=1), index=rows.index, columns=columns)
+        frames.append(pd.concat([rows[KEYS + TARGETS], quantiles], axis=1))
 
     fc = pd.concat(frames, ignore_index=True)
-    missing = fc[qcol(levels[0])].isna()
+    missing = fc[columns].isna().any(axis=1)
     if missing.any():
         log.warning("backtest: %s has no forecast for %d rows", model.name, int(missing.sum()))
         fc = fc[~missing]

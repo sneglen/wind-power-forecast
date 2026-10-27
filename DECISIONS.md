@@ -59,7 +59,7 @@ the full pipeline on it in CI.
 from day one. A test guarantees the committed file matches its generator.
 **Next:** swap for a small real DK1 slice in Step 1.
 
-### D-009 · 2026-10-26 · Climatology benchmark as the Step 0 model
+### D-009 · 2026-10-26 · Climatology benchmark as the Step 0 model — *superseded by D-026*
 **Decision:** the backtest stage issues rolling empirical quantiles of the last
 `window_days` of observed normalised power.
 **Why:** it is the natural reference model for skill scores, and it exercises the issue-time
@@ -233,3 +233,31 @@ the extension.
 **Rejected:** regridding or keeping the DK1 box (unneeded volume); Open-Meteo's ensemble
 API (counts each member as calls against the free-tier budget).
 **Open (Step 8):** verify that the 00 UTC ENS run is published before the issue time.
+
+### D-026 · 2026-10-27 · Three baselines, refit monthly on all known data
+**Decision:** `models/baselines.py` holds the references, all run in the `walk_forward`
+regime (refit at the first issue of each month on everything known then):
+- **climatology**: empirical quantiles of every known hourly y, the same for every hour;
+- **persistence**: y at the last known hour, plus empirical quantiles of its past errors at
+  the same horizon k;
+- **new reference** (Nielsen et al., 1998): a_k y(t) + (1 − a_k) ȳ with a_k the lag-k
+  autocorrelation of the hourly series (lag k + `power_lag_h`), plus error quantiles by k.
+
+Quantiles are clipped to [0, 1]. A horizon with fewer than `min_error_samples` past errors
+borrows the nearest horizon that has enough (k = 38 occurs only on autumn DST days).
+**Why:** the plan's assumptions (training data only, updated walk-forward). The 28-day
+rolling climatology of Step 0 is a different, recency-weighted reference. Estimating a_k from
+the hourly series uses every hour rather than one pair per day and matches the paper's
+definition.
+**Rejected:** month-of-year climatology (the plan's option): with a year of training, each
+month's quantiles would rest on a single month.
+
+### D-027 · 2026-10-27 · One quantile grid for CRPS and reporting; common hours
+**Decision:** every model predicts the 99 quantiles τ = 0.01 … 0.99 (`crps_levels`), which
+contain the 19 reporting levels. `scoring.py` computes CRPS with scoringrules
+`crps_quantile` (= 2 × mean pinball loss over the grid), pinball loss and coverage on the
+19 levels, and MAE of the median. Models are scored on the test period's product hours
+that every model forecast, with and without curtailed hours; skill is
+1 − CRPS / CRPS(climatology), overall and by horizon.
+**Why:** one forecast serves both scores without interpolating quantiles; comparing models
+on different hours would bias skill scores.
