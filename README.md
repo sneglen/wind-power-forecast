@@ -6,9 +6,9 @@ Day-ahead forecasts of DK1 wind power as calibrated, self-adapting predictive di
 (recursive least squares, time-adaptive quantile regression, bounded distributions), and what
 that uncertainty is worth in the DK1 single-price imbalance market. Data: 2024–2026.
 
-> **Status:** Steps 0–5 are done and run on the full data (2024-03 to 2026-10): three
-> references, frozen, walk-forward and recursive power curves, and three predictive
-> distributions. The full evaluation (Step 6) follows.
+> **Status:** Steps 0–6 are done on the full data (2024-03 to 2026-10): three references,
+> frozen, walk-forward and recursive power curves, three predictive distributions, and the
+> test-year evaluation. The market backtest (Step 7) follows.
 
 Developed with AI assistance (Claude Code); modelling choices and their reasons are mine and
 recorded in [DECISIONS.md](DECISIONS.md).
@@ -218,7 +218,34 @@ quantile, largely curtailed and other low-output hours; Step 6 examines calibrat
 
 ## Evaluation
 
-_Pending._
+The test year (2025-03-01 to 2026-02-28) is scored once, with every hyper-parameter frozen
+beforehand, following Madsen et al. (2005) and Pinson et al. (2007). The full report, with
+figures, is [reports/evaluation.md](reports/evaluation.md) (`make evaluate`). All models are
+scored on the same 8,664 day-ahead product hours (361 days; 4 days have no weather run).
+
+| Model | CRPS | Skill vs climatology [90 % band] | MAE / RMSE (% of capacity) | 90 % interval: coverage, width |
+|---|---|---|---|---|
+| Climatology | 0.126 | 0 % | 18.3 / 23.0 | 88 %, 0.68 |
+| New reference | 0.116 | +8.1 % [+5.5, +10.6] | 16.6 / 20.3 | 90 %, 0.62 |
+| Power curve, frozen | 0.0426 | +66.2 % [+63.6, +68.6] | 5.62 / 8.26 | 83 %, 0.18 |
+| Power curve, RLS | 0.0421 | +66.6 % [+63.8, +69.0] | 5.56 / 8.18 | 84 %, 0.18 |
+| Quantile regression | 0.0419 | +66.7 % [+64.2, +69.0] | 5.56 / 8.18 | 84 %, 0.20 |
+| Logit-normal | 0.0416 | +67.0 % [+64.4, +69.2] | 5.56 / 8.18 | 89 %, 0.23 |
+| LightGBM quantiles | 0.0413 | +67.2 % [+64.6, +69.5] | 5.56 / 8.18 | 74 %, 0.14 |
+
+- **Point accuracy.** The power curve's RMSE is 8.2 % of capacity. Energinet's day-ahead
+  forecast, issued seven hours later with newer weather, scores 10.0 % as published, but it
+  runs about 16 % low against settled production; recalibrated linearly on the training
+  period, it reaches 6.9 %. Its information edge is worth about 1.3 points of RMSE.
+- **Significance.** Diebold–Mariano tests on daily CRPS: every curve-based model beats every
+  baseline (|DM| > 11); the logit-normal and LightGBM beat the frozen and walk-forward curves
+  (DM −2.1 to −3.0); the three distributions do not differ significantly from each other.
+- **Calibration versus sharpness.** LightGBM has the best CRPS but is the least reliable:
+  its 90 % interval covers 74 %. The logit-normal is close to nominal in the tails (89 %) but
+  its median sits too high (42 % of observations below it). Quantile regression is the most
+  even. CRPS rewards sharpness, so reliability is judged separately.
+- **Curtailment.** Without the 6 % of curtailed hours, skill rises to 72 % and is flat across
+  horizons; with them, it dips to 47 % at midday (k = 27–28), where curtailment peaks.
 
 ## DK1 imbalance-market backtest
 
@@ -267,6 +294,7 @@ src/wpforecast/
                           power_curve.py (B-spline curve, RLS with forgetting),
                           probabilistic.py (quantile regression, logit-normal, LightGBM)
   scoring.py              CRPS, pinball loss, coverage, MAE, skill
+  evaluation.py           test-year report: bootstrap bands, reliability, PIT, Diebold-Mariano
   __main__.py             CLI: wpforecast <stage> --config ...
 scripts/                  utilities: CI watcher
 tests/                    unit tests, look-ahead test, end-to-end smoke test

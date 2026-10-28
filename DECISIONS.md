@@ -372,3 +372,22 @@ refresh would add another copy to the history of every clone. All three licences
 allow redistribution with attribution.
 **Rejected:** committing the data (history bloat); Git LFS (bandwidth quotas on a public
 repository); a Zenodo DOI (permanent, not needed now).
+
+### D-036 · 2026-10-28 · Test-year evaluation protocol
+**Decision:** `evaluation.py` scores the test year once, on the hours every model forecast,
+with and without curtailed hours: CRPS and skill with a day-block bootstrap band (1,000
+draws, 90 %), MAE and RMSE in % of capacity, the coverage and width of central 50/80/90 %
+intervals, reliability with bootstrap bands, randomised-rank PIT histograms, and
+Diebold–Mariano tests on daily mean CRPS (Newey–West, 7 lags). The report and its figures
+are committed under `reports/`. Horizons with fewer than 30 test hours (k = 38) are left out
+of the by-horizon plots.
+**Why:** the protocol of Madsen et al. (2005) and Pinson et al. (2007). Days are the
+resampling and testing unit because errors within a day are strongly dependent; resampling
+hours would give bands that are far too narrow.
+**Energinet benchmark:** as published it runs 16 % low against settled production (slope
+0.68; correct time alignment checked at lags −2…2), so it does not cover the same plants.
+It is reported raw and after a linear recalibration fitted on the training period only
+(P = 1.33 F − 227 MW). Raw, it looks worse than this project's forecast (RMSE 10.0 % against
+8.2 %); recalibrated, it is better (6.9 %), as its later issue time predicts.
+**Not done:** model changes after seeing the test year. The weaknesses found (too narrow
+LightGBM, a high logit-normal median) are reported, not tuned away.

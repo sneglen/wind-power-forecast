@@ -190,6 +190,12 @@ class Model:
 class Evaluation:
     bootstrap_block_days: int
     n_bootstrap: int
+    band: float
+    intervals: tuple[float, ...]
+    pit_bins: int
+    min_hours_per_horizon: int
+    dm_max_lag: int
+    seed: int
 
 
 @dataclass(frozen=True)
@@ -397,6 +403,21 @@ def _validate(cfg: Config) -> None:
     _check(m.logitnormal.nu > 0, "[model.logitnormal] nu must be > 0")
     _check(0 < m.logitnormal.epsilon < 0.5, "[model.logitnormal] epsilon must be in (0, 0.5)")
 
+    ev = cfg.evaluation
+    _check(
+        ev.bootstrap_block_days >= 1 and ev.n_bootstrap >= 10, "[evaluation] bootstrap too small"
+    )
+    _check(0 < ev.band < 1, "[evaluation] band must be in (0, 1)")
+    _check(all(0 < x < 1 for x in ev.intervals), "[evaluation] intervals must be in (0, 1)")
+    _check(
+        all(
+            any(abs(level - (1 - x) / 2) < 1e-9 for level in cfg.quantiles.levels)
+            for x in ev.intervals
+        ),
+        "[evaluation] each interval's lower end must be a reporting quantile level",
+    )
+    _check(ev.pit_bins >= 2 and ev.dm_max_lag >= 0, "[evaluation] pit_bins >= 2, dm_max_lag >= 0")
+
     mk = cfg.market
     _check(mk.pricing == "single", "[market] only single pricing is supported")
     _check(mk.portfolio_mw > 0, "[market] portfolio_mw must be > 0")
@@ -479,7 +500,12 @@ def load_config(path: str | Path) -> Config:
                 features=tuple(_table(raw, "model.gbm").get("features", [])),
             ),
         ),
-        evaluation=_build(Evaluation, raw, "evaluation"),
+        evaluation=_build(
+            Evaluation,
+            raw,
+            "evaluation",
+            intervals=tuple(float(x) for x in _table(raw, "evaluation").get("intervals", [])),
+        ),
         market=_build(Market, raw, "market"),
     )
     _validate(cfg)

@@ -174,8 +174,15 @@ features = [
 ]
 
 [evaluation]
-bootstrap_block_days = 1      # day-block bootstrap for consistency bands
+# Step 6: test-year verification (Madsen et al. 2005; Pinson et al. 2007).
+bootstrap_block_days = 1      # moving-block bootstrap over days: errors within a day are dependent
 n_bootstrap = 1000
+band = 0.90                   # bootstrap bands and intervals for skill and reliability
+intervals = [0.5, 0.8, 0.9]   # central prediction intervals: coverage and width (sharpness)
+pit_bins = 10
+min_hours_per_horizon = 30   # by-horizon plots skip rare k (k = 38: autumn DST days only)
+dm_max_lag = 7                # Newey-West lags (days) for the Diebold-Mariano variance
+seed = 0                      # bootstrap and PIT randomisation
 
 [market]
 area = "DK1"

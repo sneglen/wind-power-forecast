@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from wpforecast import backtest, data, features, scoring
+from wpforecast import backtest, data, evaluation, features, scoring
 from wpforecast.backtest import Model
 from wpforecast.config import Config
 from wpforecast.data import checks, ens
@@ -35,8 +35,6 @@ METRICS = "metrics.json"
 SCORES = "scores.md"
 TUNING = "tuning.json"
 CURVE_PARAMS = "power_curve_params.parquet"
-RELIABILITY = "reliability.png"
-SKILL_BY_HORIZON = "crps_skill_by_horizon.png"
 CURVE_BY_SECTOR = "power_curve_by_sector.png"
 CURVE_TRAJECTORY = "power_curve_trajectory.png"
 FAN_CHART = "fan_chart_stormy_week.png"
@@ -180,18 +178,10 @@ def _trajectory(model: PowerCurve) -> pd.DataFrame:
     return frame.assign(model=model.name, time_utc=list(times))
 
 
-def _scored_rows(cfg: Config, fc: pd.DataFrame) -> pd.DataFrame:
-    """Test-period product hours with an observation, forecast by every model."""
-    fc = fc[(fc["period"] == "test") & fc["in_product"]].dropna(subset=["y"])
-    n_models = fc["model"].nunique()
-    per_hour = fc.groupby(["issue_time_utc", "time_utc"])["model"].transform("nunique")
-    return fc[per_hour == n_models]
-
-
 def run_evaluate(cfg: Config) -> Path:
-    """Score the test period's product hours for every model, with and without curtailment."""
+    """Score the test year for every model: metrics, a score table and the evaluation report."""
     fc = pd.read_parquet(_require(cfg.paths.outputs / FORECASTS, "Run `make backtest` first."))
-    fc = _scored_rows(cfg, fc)
+    fc = evaluation.scored_rows(fc)
     if fc.empty:
         raise ValueError("no out-of-sample forecasts with observations to evaluate")
 
@@ -227,6 +217,7 @@ def run_evaluate(cfg: Config) -> Path:
         log.info(
             "evaluate: %-14s CRPS %.4f over %d hours", name, result["crps"], len(fc) // len(results)
         )
+    evaluation.run(cfg, fc)
     return out
 
 
@@ -252,42 +243,18 @@ def score_table(metrics: dict) -> str:
 
 
 def run_figures(cfg: Config) -> Path:
-    """Reliability diagram and CRPS skill by horizon, one line per model."""
+    """Model figures: the power curve by direction and over time, and a fan chart.
+
+    The verification figures (skill, reliability, PIT, sharpness) come with the evaluation.
+    """
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    metrics = json.loads(
-        _require(cfg.paths.outputs / METRICS, "Run `make evaluate` first.").read_text()
-    )
+    _require(cfg.paths.outputs / FORECASTS, "Run `make backtest` first.")
     out_dir = cfg.paths.figures
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    fig, ax = plt.subplots(figsize=(4.5, 4.5))
-    ax.plot([0, 1], [0, 1], color="0.6", lw=1, ls="--", label="ideal")
-    for name, r in metrics["models"].items():
-        nominal = [float(x) for x in r["coverage"]]
-        ax.plot(nominal, list(r["coverage"].values()), marker="o", ms=3, label=name)
-    ax.set(xlabel="nominal level", ylabel="observed frequency below", xlim=(0, 1), ylim=(0, 1))
-    ax.set_title(f"Reliability, {metrics['n_hours']} h out-of-sample")
-    ax.legend(loc="upper left", frameon=False)
-    fig.tight_layout()
-    fig.savefig(out_dir / RELIABILITY, dpi=150)
-    plt.close(fig)
-
-    fig, ax = plt.subplots(figsize=(6, 3.5))
-    ax.axhline(0, color="0.6", lw=1)
-    for name, r in metrics["models"].items():
-        if name == metrics["reference"] or "crps_skill_by_horizon" not in r:
-            continue
-        k = [int(x) for x in r["crps_skill_by_horizon"]]
-        ax.plot(k, list(r["crps_skill_by_horizon"].values()), marker="o", ms=3, label=name)
-    ax.set(xlabel="horizon k (h)", ylabel=f"CRPS skill vs {metrics['reference']}")
-    ax.legend(frameon=False)
-    fig.tight_layout()
-    fig.savefig(out_dir / SKILL_BY_HORIZON, dpi=150)
-    plt.close(fig)
 
     params = cfg.paths.outputs / CURVE_PARAMS
     if params.exists():

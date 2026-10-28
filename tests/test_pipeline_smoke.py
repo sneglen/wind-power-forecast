@@ -4,7 +4,7 @@ import json
 import pandas as pd
 import pytest
 
-from wpforecast import features, pipeline
+from wpforecast import evaluation, features, pipeline
 from wpforecast.config import Config
 from wpforecast.scoring import qcol
 
@@ -48,9 +48,11 @@ def test_pipeline_end_to_end(cfg):
         assert 0 < result["crps"] <= result["mae_median"] + 1e-12  # CRPS <= MAE of the median
     assert metrics["models"]["climatology"]["crps_skill"] == 0
     assert "| persistence |" in (cfg.paths.outputs / pipeline.SCORES).read_text()
+    report = (cfg.paths.reports / evaluation.REPORT).read_text()
+    assert "## Diebold" in report and "energinet" in report
+    for figure in ("skill_by_horizon", "reliability", "pit", "sharpness"):
+        assert (cfg.paths.reports / evaluation.FIGURES / f"{figure}.png").stat().st_size > 0
     figures = (
-        pipeline.RELIABILITY,
-        pipeline.SKILL_BY_HORIZON,
         pipeline.CURVE_BY_SECTOR,
         pipeline.CURVE_TRAJECTORY,
         pipeline.FAN_CHART,

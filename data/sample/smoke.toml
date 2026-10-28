@@ -31,3 +31,7 @@ end = 2025-03-27
 
 [model.baselines]
 min_error_samples = 3         # the sample has only a few days per horizon
+
+[evaluation]
+min_hours_per_horizon = 1     # an 8-day test period has 8 hours per horizon
+n_bootstrap = 200
