@@ -202,3 +202,31 @@ def test_highs_and_irls_solve_the_same_quantile_regression(cfg):
         loss[solver] = scoring.pinball(y, quantiles[solver], LEVELS).mean(axis=0)
     assert (loss["highs"] <= loss["irls"] + 1e-9).all()
     assert np.abs(quantiles["highs"] - quantiles["irls"]).max() < 0.01
+
+
+@pytest.mark.parametrize("solver", QR_SOLVERS)
+def test_quantreg_is_constant_beyond_the_training_range(cfg, solver):
+    """No training p above 0.7: at p = 0.85 the quantiles are those at the largest p seen,
+    ordered and inside [0, 1]. Uniform knots over [0, 1] gave medians of -1 here (D-042)."""
+    data = _pairs()
+    data = data[data["p_hat"] <= 0.7]
+    params = dataclasses.replace(cfg.model.quantreg, solver=solver)
+    model = QuantileRegression("t", None, tuple(LEVELS), tuple(LEVELS), 1, params, 38)
+    model._fit(data)
+
+    def probe(p: float) -> np.ndarray:
+        return model._quantiles(pd.DataFrame({"p_hat": [p], "horizon_h": [37]}))[0]
+
+    beyond = probe(0.85)
+    assert np.allclose(beyond, probe(data["p_hat"].max()))
+    assert (np.diff(beyond) >= -1e-9).all() and (beyond > -0.05).all() and (beyond < 1.05).all()
+
+
+def test_quantile_lp_survives_a_rank_deficient_design():
+    """Duplicate columns make the dual's constraints redundant; the primal still solves it."""
+    rng = np.random.default_rng(5)
+    x = rng.random(200)
+    X = np.c_[np.ones(200), x, x, 2 * x]  # rank 2
+    y = 1 + 3 * x + rng.normal(0, 0.1, 200)
+    b = quantile_lp(X, y, 0.5)
+    assert np.abs(X @ b - (1 + 3 * x)).max() < 0.1

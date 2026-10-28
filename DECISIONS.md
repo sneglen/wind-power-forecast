@@ -464,7 +464,7 @@ its twin without s, with Diebold–Mariano tests, and spread–skill curves.
 nonlinearity: a wide wind spread near cut-in or rated power means little power uncertainty.
 **Not done:** the optional adaptive HRES/ENS-mean combination; it is left for later.
 
-### D-041 · 2026-10-28 · Quantile regression solver: IRLS or HiGHS, IRLS by default
+### D-041 · 2026-10-28 · Quantile regression solver: IRLS or HiGHS, IRLS by default — *default superseded by D-042*
 **Decision:** `[model.quantreg] solver` selects statsmodels' IRLS (`"irls"`, the default) or
 the exact linear program solved by SciPy's HiGHS (`"highs"`). HiGHS solves the dual LP:
 n variables bounded in [0, 1] and p equality constraints. The coefficients are the
@@ -483,3 +483,34 @@ exact optimum does. Switching the default would change the committed results wit
 fixing that.
 **Open:** a quantile regression basis that stays identified at high p̂, e.g. knots over the
 training range of p̂ with constant extrapolation beyond it, or a ridge penalty.
+
+### D-042 · 2026-10-28 · Quantile regression knots at quantiles of the training p̂; HiGHS by default
+**Decision:** the interior knots of the quantile regression's B-spline basis in p̂ sit at
+equally spaced quantiles of the p̂ in each training window. The basis ends at the largest p̂
+seen; beyond it, every quantile is constant in p̂. `[model.quantreg] solver` defaults to
+`"highs"`.
+**What was wrong:** the model specification, not the code and not the tuning. The basis
+spanned [0, 1] with uniform knots, but in a 180-day window p̂ rarely exceeds 0.9: before
+2025-01-23 its maximum was 0.884, and the largest y was 0.858. The top basis functions
+therefore rested on a handful of rows, and their coefficients, which interact with the
+horizon, were not identified. At p̂ = 0.85 and k = 28 the fitted median was −1.17 with
+both solvers. Sorting and clipping in the backtest hid this except in storm hours. That is
+the "erratic tail at high p̂" reported in Step 6 (D-036). No setting of the existing
+parameters removes it: fewer knots only shrink the empty region. It was found on
+validation, while comparing solvers (D-041).
+**Effect on validation:** mean CRPS is unchanged (0.0341 against 0.0341, DM p = 0.87). The
+storm hour of 2025-01-24 13:00 UTC improves from 0.281 to 0.079, and the quantiles at
+p̂ = 0.85 become 0.51–0.80 (1–99 %) instead of −1.2 or worse. With the defect gone, the two
+solvers agree to four decimals (0.0341 each). HiGHS becomes the default because it is
+exact, has no iteration cap and is twice as fast (59 s against 122 s).
+**Rejected:** a ridge penalty, which adds a hyper-parameter to tune; dropping the
+horizon interaction, which loses the growth of spread with k.
+**Effect on the test year** (full rerun; every other model unchanged): `quantreg` CRPS
+0.0419 → 0.0414 (skill +66.7 % → +67.1 %); `quantreg_ens` 0.0412 → 0.0410. The ENS spread's
+gain for quantile regression shrinks from −1.6 % (DM p = 0.007) to −0.9 % (p = 0.17, not
+significant): part of the earlier gain was the spread compensating for the broken basis.
+The full backtest takes 17 minutes instead of 55.
+**Robustness:** HiGHS solves the dual LP; on small samples a rank-deficient design (e.g. 203
+rows, rank 25 of 27 in the smoke run) can make its redundant constraints numerically
+"infeasible". `quantile_lp` then solves the primal, which is always feasible. The full-data
+run never needed the fallback.

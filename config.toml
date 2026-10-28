@@ -153,11 +153,11 @@ min_train_rows = 200          # a layer forecasts only once it has this many tra
 # Adaptive quantile regression: q_tau = [B(p), B(p) k / max_horizon_h]' gamma_tau.
 window_days = 180             # rolling window
 refit_days = 7                # weekly refit
-spline_knots = 5              # interior knots of the B-spline in p over [0, 1]
+spline_knots = 5              # interior knots of the B-spline in p, at quantiles of training p
 spline_degree = 3
-# "irls": statsmodels' iteratively reweighted least squares (approximate, max 2000 iterations);
-# "highs": the exact linear program, solved by SciPy's HiGHS.
-solver = "irls"
+# "highs": the exact linear program, solved by SciPy's HiGHS (2-5x faster);
+# "irls": statsmodels' iteratively reweighted least squares (approximate, max 2000 iterations).
+solver = "highs"
 
 [model.logitnormal]
 # Generalised logit-normal: z = log(y^nu / (1 - y^nu)) ~ N(mu, sigma^2), censored at

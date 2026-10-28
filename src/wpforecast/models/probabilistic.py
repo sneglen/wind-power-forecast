@@ -4,7 +4,8 @@ Each layer owns a power curve, updated daily, and learns the distribution of y g
 horizon k and (for the gradient-boosted model) the NWP inputs:
 
 - ``QuantileRegression`` (Nielsen et al., 2006): q_tau = [B(p), B(p) k/K]' gamma_tau, linear
-  quantile regression on a B-spline basis in p; refit weekly on a rolling window. A
+  quantile regression on a B-spline basis in p, knots at quantiles of the training p and
+  constant beyond its maximum; refit weekly on a rolling window. A
   pragmatic stand-in for time-adaptive quantile regression (Moller et al., 2008). Solved by
   statsmodels' IRLS or, exactly, as a linear program by HiGHS (``solver``).
 - ``LogitNormal`` (Pinson, 2012): the generalised logit z = log(y^nu / (1 - y^nu)) is normal,
@@ -30,7 +31,7 @@ import warnings
 
 import numpy as np
 import pandas as pd
-from scipy import optimize, stats
+from scipy import optimize, sparse, stats
 from scipy.interpolate import BSpline
 
 from wpforecast.config import GBM, QuantReg
@@ -144,13 +145,26 @@ def quantile_lp(X: np.ndarray, y: np.ndarray, tau: float) -> np.ndarray:
 
     The primal LP, min tau 1'u + (1 - tau) 1'v s.t. X b + u - v = y, u, v >= 0, has 2n + p
     variables. Its dual, max y'a s.t. X'a = (1 - tau) X'1, 0 <= a <= 1, has n bounded variables
-    and p constraints, and solves ~15x faster; b is the dual's constraint multipliers."""
-    result = optimize.linprog(
+    and p constraints, and solves ~15x faster; b is the dual's constraint multipliers. With
+    a rank-deficient X (small samples) the dual's redundant constraints can be declared
+    infeasible numerically; the primal, always feasible, is then solved instead."""
+    dual = optimize.linprog(
         -y, A_eq=X.T, b_eq=(1 - tau) * X.sum(axis=0), bounds=(0, 1), method="highs"
     )
-    if not result.success:
-        raise RuntimeError(f"quantile regression LP failed at tau = {tau}: {result.message}")
-    return -result.eqlin.marginals
+    if dual.success:
+        return -dual.eqlin.marginals
+    n, p = X.shape
+    eye = sparse.identity(n, format="csr")
+    primal = optimize.linprog(
+        np.r_[np.zeros(p), np.full(n, tau), np.full(n, 1 - tau)],
+        A_eq=sparse.hstack([sparse.csr_matrix(X), eye, -eye], format="csr"),
+        b_eq=y,
+        bounds=np.r_[np.tile([-np.inf, np.inf], (p, 1)), np.tile([0.0, np.inf], (2 * n, 1))],
+        method="highs",
+    )
+    if not primal.success:
+        raise RuntimeError(f"quantile regression LP failed at tau = {tau}: {primal.message}")
+    return primal.x[:p]
 
 
 def _monthly(fitted_at: pd.Timestamp | None, now: pd.Timestamp) -> bool:
@@ -163,10 +177,21 @@ class QuantileRegression(_Layer):
     ):
         super().__init__(name, curve, fit_levels, grid, min_train_rows, ensemble)
         self.params, self.max_k = params, max_k
-        inner = np.linspace(0, 1, params.spline_knots + 2)[1:-1]
-        ends = np.ones(params.spline_degree + 1)
-        self.t = np.r_[0 * ends, inner, ends]
+        self.t = self.knots(np.linspace(0, 1, 101))  # replaced at every fit
         self.gamma = np.empty(0)
+
+    def knots(self, p: np.ndarray) -> np.ndarray:
+        """Knot vector over [0, max p], interior knots at equally spaced quantiles of p.
+
+        Every basis function then rests on about n / (knots + 1) training rows. Uniform
+        knots over [0, 1] left the top functions almost without data, since p rarely
+        exceeds 0.9, and their coefficients unidentified (D-042)."""
+        degree, n_inner = self.params.spline_degree, self.params.spline_knots
+        top = float(np.max(p))
+        inner = np.quantile(p, np.linspace(0, 1, n_inner + 2)[1:-1])
+        if not (np.diff(np.r_[0.0, inner, top]) > 0).all():  # ties, e.g. many p = 0
+            inner = np.linspace(0, top, n_inner + 2)[1:-1]
+        return np.r_[np.zeros(degree + 1), inner, np.full(degree + 1, top)]
 
     def _due(self, now: pd.Timestamp) -> bool:
         return now - self.fitted_at >= self.params.refit_days * DAY
@@ -180,8 +205,9 @@ class QuantileRegression(_Layer):
         ok = np.isfinite(p)
         b = np.full((len(p), len(self.t) - self.params.spline_degree - 1), np.nan)
         if ok.any():
+            top = self.t[-1] * (1 - 1e-9)  # beyond the data: constant in p
             b[ok] = BSpline.design_matrix(
-                np.clip(p[ok], 0, 1 - 1e-9), self.t, self.params.spline_degree
+                np.clip(p[ok], 0, top), self.t, self.params.spline_degree
             ).toarray()
         parts = [b, b * (np.asarray(k, dtype=float) / self.max_k)[:, None]]
         if spread is not None:
@@ -193,6 +219,7 @@ class QuantileRegression(_Layer):
         return self.design(rows["p_hat"].to_numpy(), rows["horizon_h"].to_numpy(), spread)
 
     def _fit(self, data: pd.DataFrame) -> None:
+        self.t = self.knots(data["p_hat"].to_numpy(dtype=float))
         X = self._design(data)
         y = data["y"].to_numpy(dtype=float)
         if self.params.solver == "highs":

@@ -210,12 +210,14 @@ issued, so they describe the point model's real out-of-sample errors.
 | Distribution on the RLS curve | CRPS | CRPS skill vs climatology | 5 % / 95 % quantile coverage |
 |---|---|---|---|
 | Curve + its own error quantiles (Step 4) | 0.0421 | +66.6 % | 9.5 % / 93.6 % |
-| Quantile regression | 0.0419 | +66.7 % | 8.4 % / 92.6 % |
+| Quantile regression | 0.0414 | +67.1 % | 8.3 % / 92.6 % |
 | Generalised logit-normal | 0.0416 | +67.0 % | 7.0 % / 96.1 % |
 | LightGBM quantiles | 0.0413 | +67.2 % | 12.2 % / 86.2 % |
 
 All three improve CRPS slightly. LightGBM is the sharpest but too narrow in the tails; the
-logit-normal is the best calibrated. Every model sees too many observations below its 5 %
+logit-normal is the best calibrated. Quantile regression's knots sit at quantiles of the
+training p̂ (D-042). With uniform knots over [0, 1], the top of the basis had almost no data,
+and storm hours got nonsense quantiles (test CRPS 0.0419 before the fix). Every model sees too many observations below its 5 %
 quantile, largely curtailed and other low-output hours; Step 6 examines calibration in full.
 
 ## Evaluation
@@ -231,7 +233,7 @@ scored on the same 8,664 day-ahead product hours (361 days; 4 days have no weath
 | New reference | 0.116 | +8.1 % [+5.5, +10.6] | 16.6 / 20.3 | 90 %, 0.62 |
 | Power curve, frozen | 0.0426 | +66.2 % [+63.6, +68.6] | 5.62 / 8.26 | 83 %, 0.18 |
 | Power curve, RLS | 0.0421 | +66.6 % [+63.8, +69.0] | 5.56 / 8.18 | 84 %, 0.18 |
-| Quantile regression | 0.0419 | +66.7 % [+64.2, +69.0] | 5.56 / 8.18 | 84 %, 0.20 |
+| Quantile regression | 0.0414 | +67.1 % [+64.7, +69.3] | 5.56 / 8.18 | 84 %, 0.20 |
 | Logit-normal | 0.0416 | +67.0 % [+64.4, +69.2] | 5.56 / 8.18 | 89 %, 0.23 |
 | LightGBM quantiles | 0.0413 | +67.2 % [+64.6, +69.5] | 5.56 / 8.18 | 74 %, 0.14 |
 
@@ -241,7 +243,8 @@ scored on the same 8,664 day-ahead product hours (361 days; 4 days have no weath
   period, it reaches 6.9 %. Its information edge is worth about 1.3 points of RMSE.
 - **Significance.** Diebold–Mariano tests on daily CRPS: every curve-based model beats every
   baseline (|DM| > 11); the logit-normal and LightGBM beat the frozen and walk-forward curves
-  (DM −2.1 to −3.0); the three distributions do not differ significantly from each other.
+  (DM −2.1 to −3.0), quantile regression the walk-forward curve (−2.2); the three
+  distributions do not differ significantly from each other.
 - **Calibration versus sharpness.** LightGBM has the best CRPS but is the least reliable:
   its 90 % interval covers 74 %. The logit-normal is close to nominal in the tails (89 %) but
   its median sits too high (42 % of observations below it). Quantile regression is the most
@@ -336,15 +339,17 @@ Test year, on the same 8,664 hours as the evaluation above (the full table is in
 | Model | CRPS without ENS → with | Change | Diebold–Mariano (p) | 90 % interval coverage |
 |---|---|---|---|---|
 | Raw ensemble vs HRES curve | 0.0421 → 0.0406 | −3.6 % | −2.96 (0.003) | 84 % → 82 % |
-| Quantile regression | 0.0419 → 0.0412 | −1.6 % | −2.72 (0.007) | 84 % → 84 % |
+| Quantile regression | 0.0414 → 0.0410 | −0.9 % | −1.36 (0.17) | 84 % → 84 % |
 | Logit-normal | 0.0416 → 0.0416 | 0.0 % | +0.03 (0.98) | 89 % → 88 % |
 | LightGBM | 0.0413 → 0.0407 | −1.5 % | −3.24 (0.001) | 74 % → 76 % |
 
 - **The spread carries information.** Binned by the raw ensemble spread, the RMSE of the
   HRES forecast rises steadily, from 2 % to 11 % of capacity
-  ([spread–skill](reports/evaluation/spread_skill.png)). Two of the three layers improve
-  significantly with it. The logit-normal does not: its σ already depends on p̂ and k, and
-  one extra term in log σ adds nothing.
+  ([spread–skill](reports/evaluation/spread_skill.png)). LightGBM improves significantly
+  with it. Quantile regression improves slightly, but not significantly: before its basis fix
+  (D-042), the spread looked significant (−1.6 %, p = 0.007), because part of its gain was
+  compensating for the broken basis. The logit-normal does not improve: its σ already
+  depends on p̂ and k, and one extra term in log σ adds nothing.
 - **The raw ensemble is the best model of the test year** (CRPS 0.0406, skill +67.8 %), and
   its mean is a better point forecast than HRES: RMSE 8.10 % against 8.18 %. Averaging 51
   members removes noise that a single run keeps. It is still under-dispersive: its 90 %
