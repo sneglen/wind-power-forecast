@@ -7,7 +7,12 @@ import pytest
 from conftest import curve_table, smoke_config
 from wpforecast import backtest, scoring
 from wpforecast.models.power_curve import PowerCurve
-from wpforecast.models.probabilistic import GradientBoosting, LogitNormal, QuantileRegression
+from wpforecast.models.probabilistic import (
+    GradientBoosting,
+    LogitNormal,
+    QuantileRegression,
+    RawEnsemble,
+)
 
 DAYS = list(pd.date_range("2024-04-01", "2024-06-30", freq="D").date)
 LEVELS = np.array([0.01, 0.1, 0.5, 0.9, 0.99])
@@ -112,3 +117,60 @@ def test_a_day_without_weather_is_skipped(tmp_path, kind):
     }[kind]()
     fc = backtest.run(cfg, model, table, "recursive", days[20], days[-1])
     assert gap not in set(fc["target_day"]) and days[-1] in set(fc["target_day"])
+
+
+def _pairs_with_spread(n: int = 6000, seed: int = 0) -> pd.DataFrame:
+    """y = p + noise whose standard deviation is the ensemble spread s."""
+    rng = np.random.default_rng(seed)
+    data = _pairs(n, seed).assign(
+        p_hat=rng.uniform(0.3, 0.7, n), ens_spread=rng.uniform(0.01, 0.15, n)
+    )
+    data["y"] = np.clip(data["p_hat"] + rng.normal(0, data["ens_spread"]), 0, 1)
+    return data
+
+
+@pytest.mark.parametrize("kind", ["quantreg", "logitnormal"])
+def test_layers_widen_with_the_ensemble_spread(cfg, kind):
+    common = ("t", None, tuple(LEVELS), tuple(LEVELS), 1)
+    k = cfg.issue.max_horizon_h
+    model = {
+        "quantreg": QuantileRegression(*common, cfg.model.quantreg, k, ensemble=True),
+        "logitnormal": LogitNormal(*common, cfg.model.logitnormal, k, ensemble=True),
+    }[kind]
+    model._fit(_pairs_with_spread(seed=0))
+    fresh = _pairs_with_spread(seed=1)
+    q = model._quantiles(fresh)
+    width = q[:, 3] - q[:, 1]  # the 10-90 % interval
+    s = fresh["ens_spread"].to_numpy()
+    assert width[s > 0.12].mean() > 3 * width[s < 0.04].mean()
+    assert np.allclose(_coverage(model, fresh), LEVELS, atol=0.04)
+
+
+def test_ensemble_models_in_the_harness(tmp_path):
+    cfg = smoke_config(tmp_path)
+    table = curve_table(cfg, DAYS)
+    rng = np.random.default_rng(0)
+    for m in range(5):
+        for r in ("onshore", "offshore"):
+            table[f"ens{m:02d}_wind_speed_100m@{r}"] = table[f"wind_speed_100m@{r}"] + rng.normal(
+                0, 1, len(table)
+            )
+            table[f"ens{m:02d}_wind_direction_100m@{r}"] = 270.0
+    grid, fit = scoring.crps_levels(cfg), scoring.fit_levels(cfg)
+
+    def curve() -> PowerCurve:
+        return PowerCurve("c", cfg.model.rls, 1.0, grid, 10, ensemble=True)
+
+    gbm = dataclasses.replace(cfg.model.gbm, features=("wind_speed_100m@onshore",))
+    for model in (
+        RawEnsemble("raw", curve(), grid),
+        QuantileRegression("qr", curve(), fit, grid, 200, cfg.model.quantreg, 38, ensemble=True),
+        LogitNormal("ln", curve(), fit, grid, 200, cfg.model.logitnormal, 38, ensemble=True),
+        GradientBoosting("gbm", curve(), fit, grid, 200, gbm, ensemble=True),
+    ):
+        fc = backtest.run(cfg, model, table, "recursive", DAYS[45], DAYS[-1])
+        q = fc[[scoring.qcol(x) for x in grid]].to_numpy()
+        assert len(fc) and np.isfinite(q).all() and (np.diff(q, axis=1) >= 0).all(), model.name
+    # Training pairs carry the spread that was issued, like p.
+    issued = model.issued_spread.reindex(model.train.index).dropna()
+    assert len(issued) and np.allclose(model.train.loc[issued.index, "ens_spread"], issued)

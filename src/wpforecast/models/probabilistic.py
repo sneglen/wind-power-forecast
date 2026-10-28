@@ -16,6 +16,11 @@ horizon k and (for the gradient-boosted model) the NWP inputs:
 The training pairs use p as it was issued (or, before the first forecast, the curve's
 prequential point), never a p fitted with hindsight. The quantile models are fitted at the
 reporting and tail levels and interpolated in tau onto the CRPS grid.
+
+With ``ensemble=True`` (Step 8) each layer also uses s, the spread (standard deviation) of
+the ENS members' power through the same curve, issued like p: quantile regression adds
+B(p) s to its basis, the logit-normal adds s to log sigma, LightGBM takes s as a feature.
+``RawEnsemble`` is the benchmark without post-processing: the members' quantiles.
 """
 
 from __future__ import annotations
@@ -48,14 +53,17 @@ class _Layer:
         fit_levels: tuple[float, ...],
         grid: tuple[float, ...],
         min_train_rows: int,
+        ensemble: bool = False,
     ) -> None:
         self.name = name
+        self.ensemble = ensemble
         self.curve = curve
         self.fit_levels = np.asarray(fit_levels)
         self.grid = np.asarray(grid)
         self.min_train_rows = min_train_rows
         self.train = pd.DataFrame()
         self.issued = pd.Series(dtype=float)
+        self.issued_spread = pd.Series(dtype=float)
         self.fitted_at: pd.Timestamp | None = None
 
     # --- schedule and data ----------------------------------------------------------------
@@ -67,9 +75,16 @@ class _Layer:
         return train
 
     def _pairs(self, rows: pd.DataFrame) -> pd.DataFrame:
-        p = self.issued.reindex(rows.index).fillna(self.curve.prequential.reindex(rows.index))
-        keep = rows[["time_utc", "horizon_h", "y", *self.columns]].assign(p_hat=p)
-        return keep.dropna(subset=["p_hat", "y"])
+        def issued(mine: pd.Series, curve: pd.Series) -> pd.Series:
+            return mine.reindex(rows.index).fillna(curve.reindex(rows.index))
+
+        keep = rows[["time_utc", "horizon_h", "y", *self.columns]].assign(
+            p_hat=issued(self.issued, self.curve.prequential)
+        )
+        if not self.ensemble:
+            return keep.dropna(subset=["p_hat", "y"])
+        keep["ens_spread"] = issued(self.issued_spread, self.curve.prequential_spread)
+        return keep.dropna(subset=["p_hat", "y", "ens_spread"])
 
     def _refit(self, now: pd.Timestamp) -> None:
         data = self._window(self.train, now)
@@ -99,11 +114,17 @@ class _Layer:
     def predict(self, inputs: pd.DataFrame) -> np.ndarray:
         p = self.curve.point(inputs)
         self.issued = pd.concat([self.issued, pd.Series(p, index=inputs.index)])
-        out = np.full((len(inputs), len(self.grid)), np.nan)
+        rows = inputs.assign(p_hat=p)
         ok = np.isfinite(p)  # no point forecast (no usable weather run): no distribution
+        if self.ensemble:
+            spread = self.curve.spread(inputs)
+            self.issued_spread = pd.concat([self.issued_spread, pd.Series(spread, inputs.index)])
+            rows["ens_spread"] = spread
+            ok &= np.isfinite(spread)
+        out = np.full((len(inputs), len(self.grid)), np.nan)
         if self.fitted_at is None or not ok.any():
             return out
-        q = self._quantiles(inputs[ok].assign(p_hat=p[ok]))
+        q = self._quantiles(rows[ok])
         out[ok] = np.clip(to_grid(q, self.fit_levels, self.grid), 0.0, 1.0)
         return out
 
@@ -122,8 +143,10 @@ def _monthly(fitted_at: pd.Timestamp | None, now: pd.Timestamp) -> bool:
 
 
 class QuantileRegression(_Layer):
-    def __init__(self, name, curve, fit_levels, grid, min_train_rows, params: QuantReg, max_k):
-        super().__init__(name, curve, fit_levels, grid, min_train_rows)
+    def __init__(
+        self, name, curve, fit_levels, grid, min_train_rows, params: QuantReg, max_k, ensemble=False
+    ):
+        super().__init__(name, curve, fit_levels, grid, min_train_rows, ensemble)
         self.params, self.max_k = params, max_k
         inner = np.linspace(0, 1, params.spline_knots + 2)[1:-1]
         ends = np.ones(params.spline_degree + 1)
@@ -136,8 +159,8 @@ class QuantileRegression(_Layer):
     def _window(self, train: pd.DataFrame, now: pd.Timestamp) -> pd.DataFrame:
         return train[train["time_utc"] > now - self.params.window_days * DAY]
 
-    def design(self, p: np.ndarray, k: np.ndarray) -> np.ndarray:
-        """Rows with a missing p come out as NaN."""
+    def design(self, p: np.ndarray, k: np.ndarray, spread: np.ndarray | None = None) -> np.ndarray:
+        """[B(p), B(p) k / K] and, with a spread, B(p) s; rows with a missing p come out NaN."""
         p = np.asarray(p, dtype=float)
         ok = np.isfinite(p)
         b = np.full((len(p), len(self.t) - self.params.spline_degree - 1), np.nan)
@@ -145,12 +168,19 @@ class QuantileRegression(_Layer):
             b[ok] = BSpline.design_matrix(
                 np.clip(p[ok], 0, 1 - 1e-9), self.t, self.params.spline_degree
             ).toarray()
-        return np.hstack([b, b * (np.asarray(k, dtype=float) / self.max_k)[:, None]])
+        parts = [b, b * (np.asarray(k, dtype=float) / self.max_k)[:, None]]
+        if spread is not None:
+            parts.append(b * np.asarray(spread, dtype=float)[:, None])
+        return np.hstack(parts)
+
+    def _design(self, rows: pd.DataFrame) -> np.ndarray:
+        spread = rows["ens_spread"].to_numpy() if self.ensemble else None
+        return self.design(rows["p_hat"].to_numpy(), rows["horizon_h"].to_numpy(), spread)
 
     def _fit(self, data: pd.DataFrame) -> None:
         import statsmodels.api as sm
 
-        X = self.design(data["p_hat"].to_numpy(), data["horizon_h"].to_numpy())
+        X = self._design(data)
         y = data["y"].to_numpy(dtype=float)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")  # iteration-limit warnings on flat tails
@@ -159,16 +189,24 @@ class QuantileRegression(_Layer):
             )
 
     def _quantiles(self, rows: pd.DataFrame) -> np.ndarray:
-        return self.design(rows["p_hat"].to_numpy(), rows["horizon_h"].to_numpy()) @ self.gamma
+        return self._design(rows) @ self.gamma
 
 
 class LogitNormal(_Layer):
     def __init__(
-        self, name, curve, fit_levels, grid, min_train_rows, params: LogitNormalConfig, max_k
+        self,
+        name,
+        curve,
+        fit_levels,
+        grid,
+        min_train_rows,
+        params: LogitNormalConfig,
+        max_k,
+        ensemble=False,
     ):
-        super().__init__(name, curve, fit_levels, grid, min_train_rows)
+        super().__init__(name, curve, fit_levels, grid, min_train_rows, ensemble)
         self.nu, self.eps, self.max_k = params.nu, params.epsilon, max_k
-        self.theta = np.zeros(7)
+        self.theta = np.zeros(8 if ensemble else 7)
 
     def _due(self, now: pd.Timestamp) -> bool:
         return _monthly(self.fitted_at, now)
@@ -180,14 +218,17 @@ class LogitNormal(_Layer):
     def inverse(self, z: np.ndarray) -> np.ndarray:
         return (1 / (1 + np.exp(-z))) ** (1 / self.nu)
 
-    def _moments(self, theta: np.ndarray, p: np.ndarray, k: np.ndarray):
-        zp, kk = self.logit(p), np.asarray(k, dtype=float) / self.max_k
+    def _moments(self, theta: np.ndarray, rows: pd.DataFrame):
+        zp = self.logit(rows["p_hat"].to_numpy(dtype=float))
+        kk = rows["horizon_h"].to_numpy(dtype=float) / self.max_k
         mu = theta[0] + theta[1] * zp + theta[2] * kk
         log_sigma = theta[3] + theta[4] * zp + theta[5] * zp**2 + theta[6] * kk
+        if self.ensemble:
+            log_sigma = log_sigma + theta[7] * rows["ens_spread"].to_numpy(dtype=float)
         return mu, np.exp(np.clip(log_sigma, -10, 5))
 
-    def _nll(self, theta: np.ndarray, p, k, y) -> float:
-        mu, sigma = self._moments(theta, p, k)
+    def _nll(self, theta: np.ndarray, rows: pd.DataFrame, y: np.ndarray) -> float:
+        mu, sigma = self._moments(theta, rows)
         low, high = y <= self.eps, y >= 1 - self.eps
         mid = ~(low | high)
         ll = stats.norm.logpdf(self.logit(y[mid]), mu[mid], sigma[mid]).sum()
@@ -196,19 +237,17 @@ class LogitNormal(_Layer):
         return -ll / len(y)
 
     def _fit(self, data: pd.DataFrame) -> None:
-        p, k = data["p_hat"].to_numpy(dtype=float), data["horizon_h"].to_numpy()
         y = data["y"].to_numpy(dtype=float)
         start = self.theta
         if not start.any():  # first fit: mu = z(p), constant sigma from the residuals
-            z = self.logit(y) - self.logit(p)
-            start = np.array([z.mean(), 1.0, 0.0, np.log(z.std() + 1e-6), 0.0, 0.0, 0.0])
-        result = optimize.minimize(self._nll, start, args=(p, k, y), method="L-BFGS-B")
+            z = self.logit(y) - self.logit(data["p_hat"].to_numpy(dtype=float))
+            start = np.zeros_like(self.theta)
+            start[:4] = [z.mean(), 1.0, 0.0, np.log(z.std() + 1e-6)]
+        result = optimize.minimize(self._nll, start, args=(data, y), method="L-BFGS-B")
         self.theta = result.x
 
     def _quantiles(self, rows: pd.DataFrame) -> np.ndarray:
-        mu, sigma = self._moments(
-            self.theta, rows["p_hat"].to_numpy(dtype=float), rows["horizon_h"].to_numpy()
-        )
+        mu, sigma = self._moments(self.theta, rows)
         z = mu[:, None] + sigma[:, None] * stats.norm.ppf(self.fit_levels)[None, :]
         q = self.inverse(z)
         q[q <= self.eps] = 0.0  # censored mass at the bounds
@@ -231,8 +270,8 @@ def calendar(time_utc: pd.Series) -> pd.DataFrame:
 
 
 class GradientBoosting(_Layer):
-    def __init__(self, name, curve, fit_levels, grid, min_train_rows, params: GBM):
-        super().__init__(name, curve, fit_levels, grid, min_train_rows)
+    def __init__(self, name, curve, fit_levels, grid, min_train_rows, params: GBM, ensemble=False):
+        super().__init__(name, curve, fit_levels, grid, min_train_rows, ensemble)
         self.params = params
         self.columns = params.features
         self.models: list = []
@@ -241,7 +280,8 @@ class GradientBoosting(_Layer):
         return _monthly(self.fitted_at, now)
 
     def _x(self, rows: pd.DataFrame) -> pd.DataFrame:
-        base = rows[["p_hat", "horizon_h", *self.params.features]].astype(float)
+        spread = ["ens_spread"] if self.ensemble else []
+        base = rows[["p_hat", "horizon_h", *spread, *self.params.features]].astype(float)
         return pd.concat([base, calendar(rows["time_utc"])], axis=1)
 
     def _fit(self, data: pd.DataFrame) -> None:
@@ -269,3 +309,27 @@ class GradientBoosting(_Layer):
     def _quantiles(self, rows: pd.DataFrame) -> np.ndarray:
         X = self._x(rows)
         return np.column_stack([m.predict(X) for m in self.models])
+
+
+class RawEnsemble:
+    """Benchmark: every ENS member through the RLS curve; the members' quantiles, no
+    post-processing. Its point forecast is the member mean."""
+
+    def __init__(self, name: str, curve: PowerCurve, grid: tuple[float, ...]) -> None:
+        self.name, self.curve, self.grid = name, curve, np.asarray(grid)
+
+    def fit(self, known: pd.DataFrame) -> None:
+        self.curve.fit(known)
+
+    def update(self, new: pd.DataFrame) -> None:
+        self.curve.update(new)
+
+    def point(self, inputs: pd.DataFrame) -> np.ndarray:
+        p = self.curve.members(inputs)
+        return p.mean(axis=1) if p.shape[1] else np.full(len(inputs), np.nan)
+
+    def predict(self, inputs: pd.DataFrame) -> np.ndarray:
+        p = self.curve.members(inputs)
+        if p.shape[1] == 0:
+            return np.full((len(inputs), len(self.grid)), np.nan)
+        return np.quantile(p, self.grid, axis=1).T  # NaN where a member is missing

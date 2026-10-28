@@ -11,6 +11,9 @@ Columns (``KEYS``, inputs, ``TARGETS``):
   ``last_known_utc``, ``run_utc`` and ``lead_h`` of the NWP run used, NWP columns
   ``<variable>@<point|region>`` for the target hour and ``<variable>@<region>@issue`` for
   the last known hour (same run)
+- ensemble inputs, if the ``nwp_ens`` table exists (Step 8): ``ens_run_utc`` and, per ENS
+  member m, ``ens<mm>_<variable>@<region>`` for 100 m speed and direction, plus the member
+  mean and standard deviation of the regional speeds, ``ens_mean_...`` and ``ens_std_...``
 - targets, revealed after the target hour: ``y`` = P / C, ``power_mw``, ``capacity_mw``,
   ``curtailed`` (day-ahead price <= ``[curtailment] da_price_max``)
 
@@ -19,7 +22,8 @@ Information set at issue time t0:
 - an observation stamped s covers [s, s + 1 h) and is usable from s + 1 h + power_lag_h;
   capacity is read like production, at the last hour known at t0;
 - an NWP run r is usable from r + availability_lag_h. The latest usable run that covers
-  every target hour is taken: normally the 00 UTC run of D-1, else that of D-2;
+  every target hour is taken: normally the 00 UTC run of D-1, else that of D-2; the same
+  rule, with its own lag, picks the ENS run;
 - day-ahead prices are published after t0, so they only flag curtailed target hours.
 
 NWP values are instantaneous. The mean over the hour [t, t + 1 h) is approximated by the
@@ -46,6 +50,7 @@ KEYS = ["target_day", "period", "issue_time_utc", "time_utc", "horizon_h", "in_p
 TARGETS = ["y", "power_mw", "capacity_mw", "curtailed"]
 HOUR = pd.Timedelta(hours=1)
 SPEED, DIRECTION, GUSTS = "wind_speed_100m", "wind_direction_100m", "wind_gusts_10m"
+ENS = "nwp_ens"
 
 
 # --- issue times, horizons and periods ---------------------------------------------------
@@ -166,10 +171,13 @@ def nwp_hourly(cfg: Config, nwp: pd.DataFrame) -> pd.DataFrame:
     return hourly.reset_index()
 
 
-def choose_runs(cfg: Config, keys: pd.DataFrame, runs: pd.DatetimeIndex) -> pd.Series:
+def choose_runs(
+    cfg: Config, keys: pd.DataFrame, runs: pd.DatetimeIndex, ensemble: bool = False
+) -> pd.Series:
     """Per issue time, the latest run usable at issue time that covers all its target hours."""
-    lag = pd.Timedelta(hours=cfg.nwp.availability_lag_h)
-    reach = pd.Timedelta(hours=cfg.nwp.max_lead_h)
+    nwp = cfg.nwp.ensemble if ensemble else cfg.nwp
+    lag = pd.Timedelta(hours=nwp.availability_lag_h)
+    reach = pd.Timedelta(hours=nwp.max_lead_h)
     runs = runs.sort_values()
     last_end = keys.groupby("issue_time_utc")["time_utc"].max() + HOUR
     chosen = {}
@@ -179,11 +187,46 @@ def choose_runs(cfg: Config, keys: pd.DataFrame, runs: pd.DatetimeIndex) -> pd.S
     return pd.Series(chosen, name="run_utc").rename_axis("issue_time_utc")
 
 
+def member_prefix(member: int) -> str:
+    return f"ens{member:02d}_"
+
+
+def ensemble_members(columns) -> list[int]:
+    """Members with columns in a feature table (empty without ENS inputs)."""
+    found = {int(c[3:5]) for c in columns if c.startswith("ens") and c[3:5].isdigit()}
+    return sorted(found)
+
+
+def ensemble_inputs(cfg: Config, rows: pd.DataFrame, table: pd.DataFrame) -> pd.DataFrame:
+    """Per row, the members of the ENS run usable at its issue time, plus their mean and
+    standard deviation of the regional speeds."""
+    runs = choose_runs(cfg, rows, pd.DatetimeIndex(table["run_utc"].unique()), ensemble=True)
+    values = [c for c in table.columns if "@" in c]
+    # A unique index, so a pure reshape: nothing to aggregate as pivot_table would.
+    wide = table.set_index(["run_utc", "time_utc", "member"])[values].unstack("member")  # noqa: PD010
+    wide.columns = [f"{member_prefix(m)}{var}" for var, m in wide.columns]
+    for region in ("onshore", "offshore"):
+        speeds = wide[[c for c in wide.columns if c.endswith(f"{SPEED}@{region}")]]
+        wide[f"ens_mean_{SPEED}@{region}"] = speeds.mean(axis=1)
+        wide[f"ens_std_{SPEED}@{region}"] = speeds.std(axis=1)
+    wide = wide.astype(np.float32).rename_axis(["ens_run_utc", "time_utc"]).reset_index()
+    keys = rows[["issue_time_utc", "time_utc"]].assign(
+        ens_run_utc=rows["issue_time_utc"].map(runs).astype(table["run_utc"].dtype)
+    )
+    return keys.merge(wide, on=["ens_run_utc", "time_utc"], how="left").drop(
+        columns=["issue_time_utc", "time_utc"]
+    )
+
+
 # --- the feature table -------------------------------------------------------------------
 
 
 def build_features(
-    cfg: Config, dataset: pd.DataFrame, nwp: pd.DataFrame, price: pd.DataFrame
+    cfg: Config,
+    dataset: pd.DataFrame,
+    nwp: pd.DataFrame,
+    price: pd.DataFrame,
+    ens: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Pure function of the interim tables; see the module docstring for the rules."""
     first = cfg.data.start + dt.timedelta(days=1)
@@ -211,6 +254,9 @@ def build_features(
     if no_run:
         log.warning("features: %d issue times have no usable NWP run", no_run)
 
+    if ens is not None:
+        rows = pd.concat([rows, ensemble_inputs(cfg, rows, ens)], axis=1)
+
     rows["y"] = dataset["power_norm"].reindex(rows["time_utc"]).to_numpy()
     rows["power_mw"] = dataset["power_mw"].reindex(rows["time_utc"]).to_numpy()
     rows["capacity_mw"] = dataset["capacity_mw"].reindex(rows["time_utc"]).to_numpy()
@@ -234,14 +280,24 @@ def _assert_information_set(cfg: Config, rows: pd.DataFrame) -> None:
     has_run = rows["run_utc"].notna()
     if not (rows.loc[has_run, "run_utc"] + lag <= issue[has_run]).all():
         raise RuntimeError("an NWP run is used before it is available")
+    if "ens_run_utc" in rows:
+        lag = pd.Timedelta(hours=cfg.nwp.ensemble.availability_lag_h)
+        has_run = rows["ens_run_utc"].notna()
+        if not (rows.loc[has_run, "ens_run_utc"] + lag <= issue[has_run]).all():
+            raise RuntimeError("an ENS run is used before it is available")
     if any("price" in c for c in input_columns(rows)):
         raise RuntimeError("prices are published after the issue time; never an input")
 
 
 def run(cfg: Config) -> Path:
     """Build the feature table from the interim tables and write it next to them."""
+    ens = cfg.paths.interim / f"{ENS}.parquet"
     table = build_features(
-        cfg, build.read(cfg, "dataset"), build.read(cfg, "nwp_hres"), build.read(cfg, "da_price")
+        cfg,
+        build.read(cfg, "dataset"),
+        build.read(cfg, "nwp_hres"),
+        build.read(cfg, "da_price"),
+        pd.read_parquet(ens) if ens.exists() else None,
     )
     out = cfg.paths.interim / FEATURES
     table.to_parquet(out, index=False)

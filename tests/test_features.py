@@ -8,7 +8,7 @@ import pytest
 from conftest import smoke_config
 from wpforecast import features
 from wpforecast.config import Config
-from wpforecast.data import build
+from wpforecast.data import build, ens
 
 DAY = dt.date(2025, 3, 22)  # an ordinary CET day inside the sample
 
@@ -28,6 +28,11 @@ def tables(tmp_path_factory) -> tuple[Config, pd.DataFrame, pd.DataFrame, pd.Dat
 @pytest.fixture(scope="module")
 def table(tables) -> pd.DataFrame:
     return features.build_features(*tables)
+
+
+@pytest.fixture(scope="module")
+def ens_table(tables) -> pd.DataFrame:
+    return pd.read_parquet(ens.build(tables[0]))
 
 
 def _horizons(cfg: Config, day: dt.date):
@@ -148,3 +153,36 @@ def test_prices_are_never_inputs(table):
     assert not [c for c in features.input_columns(table) if "price" in c]
     assert set(features.TARGETS) <= set(table.columns)
     assert table["curtailed"].dtype == bool
+
+
+def test_ensemble_information_set_at_issue_time(tables, ens_table):
+    """ENS runs published after the issue time cannot reach it; the current one does."""
+    cfg, dataset, nwp, price = tables
+    issue = features.issue_time_utc(cfg, DAY)
+    lag = pd.Timedelta(hours=cfg.nwp.ensemble.availability_lag_h)
+    values = [c for c in ens_table.columns if "@" in c]
+    clean = _issue_rows(features.build_features(cfg, dataset, nwp, price, ens_table))
+    assert len(features.ensemble_members(clean.columns)) == 51
+    assert (clean["ens_run_utc"] == issue.floor("D")).all()
+
+    late = ens_table.copy()
+    late.loc[late["run_utc"] + lag > issue, values] = 99.0
+    corrupted = _issue_rows(features.build_features(cfg, dataset, nwp, price, late))
+    pd.testing.assert_frame_equal(clean, corrupted)
+
+    current = ens_table.copy()
+    current.loc[current["run_utc"] == issue.floor("D"), values] = 99.0
+    moved = _issue_rows(features.build_features(cfg, dataset, nwp, price, current))
+    assert (moved["ens_mean_wind_speed_100m@onshore"] > 50).all()
+    assert (moved["ens_std_wind_speed_100m@onshore"] < 1e-3).all()
+
+    slow = dataclasses.replace(cfg.nwp.ensemble, availability_lag_h=11)  # 01:00 UTC too late
+    later = dataclasses.replace(cfg, nwp=dataclasses.replace(cfg.nwp, ensemble=slow))
+    rows = _issue_rows(features.build_features(later, dataset, nwp, price, ens_table))
+    assert (rows["ens_run_utc"] == issue.floor("D") - pd.Timedelta(days=1)).all()
+
+
+def test_an_ens_run_used_too_early_is_refused(cfg, table):
+    rows = table.assign(ens_run_utc=table["issue_time_utc"])
+    with pytest.raises(RuntimeError, match="ENS run"):
+        features._assert_information_set(cfg, rows)

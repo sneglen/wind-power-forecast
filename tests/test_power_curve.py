@@ -101,3 +101,29 @@ def test_power_curve_in_the_harness(cfg, table):
     long = fc[fc["horizon_h"] >= 31]
     rmse = lambda f: np.sqrt(((f["y"] - f["point"]) ** 2).mean())  # noqa: E731
     assert rmse(short) < rmse(long)  # the correction helps where the error persists
+
+
+def _with_members(table: pd.DataFrame, offsets=(-1.0, 0.0, 1.0)) -> pd.DataFrame:
+    """ENS members whose speed is the HRES speed plus an offset (member 1 = HRES)."""
+    cols = {}
+    for m, offset in enumerate(offsets):
+        for r in ("onshore", "offshore"):
+            cols[f"ens{m:02d}_wind_speed_100m@{r}"] = table[f"wind_speed_100m@{r}"] + offset
+            cols[f"ens{m:02d}_wind_direction_100m@{r}"] = table[f"wind_direction_100m@{r}"]
+    return table.assign(**cols)
+
+
+def test_members_pass_through_the_same_curve(cfg, table):
+    rows = _with_members(table)
+    model = PowerCurve("curve", cfg.model.rls, 1.0, scoring.crps_levels(cfg), 10, ensemble=True)
+    model.fit(rows[rows["target_day"] < DAYS[40]])
+    probe = rows[rows["target_day"] == DAYS[50]]
+    p = model.members(probe)
+    assert p.shape == (len(probe), 3)
+    assert np.allclose(p[:, 1], model.point(probe))  # the member equal to HRES
+    assert (model.spread(probe) > 0).all()
+    assert len(model.prequential_spread) == len(model.prequential)  # kept like the point
+
+    plain = _model(cfg)
+    assert plain.members(table.head(3)).shape == (3, 0)
+    assert np.isnan(plain.spread(table.head(3))).all()

@@ -40,3 +40,19 @@ def test_pit_spreads_ties_at_a_bound(cfg):
     fc = pd.DataFrame(np.tile(q, (n, 1)), columns=[scoring.qcol(x) for x in grid]).assign(y=0.0)
     p = evaluation.pit(cfg, fc, rng)
     assert p.max() <= 0.31 and p.mean() == pytest.approx(0.15, abs=0.01)
+
+
+def test_ensemble_pairs_compare_each_layer_with_its_twin(cfg):
+    rng = np.random.default_rng(4)
+    days = pd.date_range("2025-03-01", periods=60, freq="D").date
+    crps = {"curve_rls": 0.05, "ens_raw": 0.06, "quantreg": 0.05, "quantreg_ens": 0.04}
+    rows = pd.concat(
+        pd.DataFrame({"model": m, "target_day": days, "crps": c + rng.normal(0, 0.002, 60)})
+        for m, c in crps.items()
+    )
+    pairs = evaluation.ensemble_pairs(cfg, rows)
+    assert list(pairs.index) == ["ens_raw", "quantreg_ens"]
+    assert pairs.loc["ens_raw", "against"] == "curve_rls"
+    assert pairs.loc["quantreg_ens", "change"] == pytest.approx(-0.2, abs=0.01)
+    assert pairs.loc["quantreg_ens", "dm"] < -1.96 < 1.96 < pairs.loc["ens_raw", "dm"]
+    assert evaluation.ensemble_pairs(cfg, rows[rows["model"] == "quantreg"]) is None

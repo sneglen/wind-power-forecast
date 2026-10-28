@@ -17,6 +17,10 @@ Point forecast for horizon k, issued at t with the last known hour p_t:
 The predictive distribution is the point plus empirical quantiles of the model's own
 prequential errors at the same horizon over the last ``error_window_days`` (Step 5 replaces
 this with proper probabilistic models).
+
+With ENS inputs (Step 8), ``members`` passes every ensemble member through the same curve
+and correction, and a curve built with ``ensemble=True`` also keeps the prequential spread
+of those member powers, for layers that use it as a covariate.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ import pandas as pd
 from scipy.interpolate import BSpline
 
 from wpforecast.config import RLS as RLSConfig
+from wpforecast.features import ensemble_members, member_prefix
 
 REGIONS = ("onshore", "offshore")
 SPEED, DIRECTION = "wind_speed_100m", "wind_direction_100m"
@@ -90,13 +95,30 @@ class Basis:
     def rows(self, rows: pd.DataFrame, at_issue: bool = False) -> np.ndarray:
         """phi for the target hours, or for the last known hour (``at_issue``)."""
         suffix = "@issue" if at_issue else ""
-        stamp = rows["last_known_utc" if at_issue else "time_utc"] + HALF_HOUR
-        hour = (stamp.dt.hour + stamp.dt.minute / 60).to_numpy()
         return self.matrix(
             {r: rows[f"{SPEED}@{r}{suffix}"].to_numpy(dtype=float) for r in REGIONS},
             {r: rows[f"{DIRECTION}@{r}{suffix}"].to_numpy(dtype=float) for r in REGIONS},
-            hour,
+            hour_of_day(rows, at_issue),
         )
+
+    def members(self, rows: pd.DataFrame, members: list[int]) -> np.ndarray:
+        """phi of every ENS member at the target hours, shape (rows x members, size)."""
+
+        def stack(var: str, region: str) -> np.ndarray:
+            cols = [f"{member_prefix(m)}{var}@{region}" for m in members]
+            return rows[cols].to_numpy(dtype=float).ravel()  # row-major: members inner
+
+        return self.matrix(
+            {r: stack(SPEED, r) for r in REGIONS},
+            {r: stack(DIRECTION, r) for r in REGIONS},
+            np.repeat(hour_of_day(rows), len(members)),
+        )
+
+
+def hour_of_day(rows: pd.DataFrame, at_issue: bool = False) -> np.ndarray:
+    """UTC hour at the middle of the target (or last known) hour, for the diurnal terms."""
+    stamp = rows["last_known_utc" if at_issue else "time_utc"] + HALF_HOUR
+    return (stamp.dt.hour + stamp.dt.minute / 60).to_numpy()
 
 
 class RLS:
@@ -134,8 +156,10 @@ class PowerCurve:
         forgetting: float,
         levels: tuple[float, ...],
         min_error_samples: int,
+        ensemble: bool = False,
     ) -> None:
         self.name = name
+        self.ensemble = ensemble
         self.params = params
         self.forgetting = forgetting
         self.levels = np.asarray(levels)
@@ -152,6 +176,7 @@ class PowerCurve:
         self.sxy = np.zeros(len(self.blocks))
         self.errors = pd.DataFrame(columns=["time_utc", "horizon_h", "error"])
         self.prequential = pd.Series(dtype=float)  # point forecast per released row (by index)
+        self.prequential_spread = pd.Series(dtype=float)  # spread of ENS member powers
         self.history: list[tuple[pd.Timestamp, np.ndarray]] = []
 
     # --- forecast -------------------------------------------------------------------------
@@ -177,6 +202,25 @@ class PowerCurve:
         curve, issue_error, _ = self._parts(rows)
         a = self.a[self._block(rows["horizon_h"].to_numpy())]
         return np.clip(curve + a * issue_error, 0.0, 1.0)
+
+    def members(self, rows: pd.DataFrame) -> np.ndarray:
+        """Point forecast of every ENS member, shape (rows, members); (rows, 0) without ENS.
+
+        Members share the HRES-based correction a_k (p_t - phi(t)' beta)."""
+        members = ensemble_members(rows.columns)
+        if not members or rows.empty:
+            return np.empty((len(rows), 0))
+        _, issue_error, _ = self._parts(rows)
+        a = self.a[self._block(rows["horizon_h"].to_numpy())] * issue_error
+        curves = (self.basis.members(rows, members) @ self.rls.beta).reshape(len(rows), -1)
+        return np.clip(curves + a[:, None], 0.0, 1.0)
+
+    def spread(self, rows: pd.DataFrame) -> np.ndarray:
+        """Standard deviation of the member powers; NaN where a member is missing."""
+        p = self.members(rows)
+        if p.shape[1] == 0:
+            return np.full(len(rows), np.nan)
+        return p.std(axis=1)
 
     def predict(self, inputs: pd.DataFrame) -> np.ndarray:
         point = self.point(inputs)
@@ -235,6 +279,9 @@ class PowerCurve:
             ignore_index=True,
         )
         self.prequential = pd.concat([self.prequential, pd.Series(point[ok], new.index[ok])])
+        if self.ensemble:  # also before this update, like the point
+            spread = pd.Series(self.spread(new)[ok], new.index[ok])
+            self.prequential_spread = pd.concat([self.prequential_spread, spread])
         residual = y - curve
         for b in np.unique(block[ok]):
             sel = ok & (block == b)

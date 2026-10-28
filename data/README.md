@@ -46,6 +46,7 @@ Energy per hour (MWh/h) is written as average power (MW).
 | `da_price` | `time_utc` (1 h) | `price_eur_mwh`, `source`, `n_15min` (hourly mean of 15-min prices from 2025-10-01) |
 | `imbalance` | `time_utc` (15 min) | `imbalance_price_eur_mwh`, `spot_price_eur_mwh`, `dominating_direction`, `satisfied_demand_mw`, `mfrr_{up,down}_eur_mwh`, `afrr_vwa_{up,down}_eur_mwh` |
 | `nwp_hres` | `run_utc`, `valid_utc`, `point` | `lead_h` (0–72) and `wind_speed_100m`, `wind_direction_100m`, `wind_speed_10m`, `wind_speed_120m`, `wind_gusts_10m` (m/s, deg), `temperature_2m` (°C), `surface_pressure` (hPa) |
+| `nwp_ens` | `run_utc`, `time_utc`, `member` | 51 ENS members (Step 8): regional hour means `wind_speed_100m@{onshore,offshore}` and `wind_direction_100m@...`, from 3-hourly u/v interpolated to hourly; built by `make ens` (or `make data` once runs are cached) |
 | `points` | `point` | requested `lat`, `lon`; grid cell used `grid_lat`, `grid_lon`, `grid_elevation_m`, `distance_km` |
 
 ## Caveats

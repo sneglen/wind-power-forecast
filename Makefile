@@ -47,6 +47,7 @@ smoke:  ## Full pipeline on the committed synthetic sample
 
 sample:  ## Re-download the committed smoke sample (real DK1 slice, needs network)
 	rm -rf data/sample/raw
+	$(RUN) ens --config data/sample/smoke.toml --online
 	$(RUN) data --config data/sample/smoke.toml --online
 
 lint:  ## Run all pre-commit hooks on every file

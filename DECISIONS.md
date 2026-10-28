@@ -233,6 +233,7 @@ the extension.
 **Rejected:** regridding or keeping the DK1 box (unneeded volume); Open-Meteo's ensemble
 API (counts each member as calls against the free-tier budget).
 **Open (Step 8):** verify that the 00 UTC ENS run is published before the issue time.
+Closed by D-039.
 
 ### D-026 · 2026-10-27 · Three baselines, refit monthly on all known data
 **Decision:** `models/baselines.py` holds the references, all run in the `walk_forward`
@@ -426,3 +427,39 @@ models' costs are almost all covariance: their errors co-move with the system's.
 **Rejected:** removing or winsorising spike hours, which are real settlements that a bidder
 pays; reporting only the hindsight-optimal τ, which would present a bet as a forecast
 property.
+
+### D-039 · 2026-10-28 · ENS inputs: availability, hourly members, feature columns
+**Decision:** the 00 UTC ENS run counts as usable 9 h after its start
+(`[nwp.ensemble] availability_lag_h`). Before the 11:00 issue, that is always the run of D−1:
+9 h ahead in summer (09:00 UTC) and 10 h in winter. `make ens` (and `make data`, when runs are
+cached) builds `nwp_ens`: per run, member and UTC hour, the regional hour means of 100 m speed
+and direction, built like the HRES features. The 3-hourly u, v are linearly interpolated to
+every hour; speed is taken per point and instant; each hour is the mean of its two ends;
+direction comes from the mean u, v. The feature table gets `ens_run_utc`, the 51 members as
+`ens<mm>_<variable>@<region>` and the members' mean and standard deviation of regional speed.
+The run is chosen by the HRES rule, with the ENS lag.
+**Why:** ECMWF's dissemination schedule puts the 00 UTC ENS to step 144 at 06:55–07:04 UTC
+and the last step at 07:40; open data follow one hour later (checked 2026-10-28). Nine hours
+also covers the last step, with margin. Keeping all members, not just their mean and spread,
+lets each member pass through the power curve. The ensemble mean correlates 0.993 with the
+HRES regional speed.
+**Rejected:** dynamical.org's ingestion time as the availability time. It is an archive; in
+operation the run would come from ECMWF open data. Also rejected: interpolating speed
+instead of u, v, which is inconsistent with the HRES direction handling.
+
+### D-040 · 2026-10-28 · ENS models: raw-ensemble benchmark and spread as a covariate
+**Decision:** four models are added when the feature table has ENS inputs:
+- `ens_raw`: every member through its own RLS curve, fitted on HRES like `curve_rls`, with
+  the HRES issue-time correction. The members' quantiles are the forecast and their mean is
+  the point.
+- `quantreg_ens`, `logitnormal_ens` and `lightgbm_ens`: the Step 5 layers plus one covariate,
+  s, the standard deviation of the 51 member powers through the layer's curve. Quantile
+  regression adds B(p) s to its basis, the logit-normal adds θ s to log σ, and LightGBM takes
+  s as a feature.
+
+s is issued and stored like p̂. Before the first forecast, the curve's prequential spread
+(before each update) fills in. The evaluation adds the CRPS change of each layer against
+its twin without s, with Diebold–Mariano tests, and spread–skill curves.
+**Why:** the plan's Extension A. Spread in power units, not wind, carries the curve's
+nonlinearity: a wide wind spread near cut-in or rated power means little power uncertainty.
+**Not done:** the optional adaptive HRES/ENS-mean combination; it is left for later.

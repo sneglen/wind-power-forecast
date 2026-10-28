@@ -7,6 +7,10 @@ nearest grid cell to each ``[points]`` entry and leads up to ``max_lead_h`` are 
 ``<raw>/ens/<YYYY>/<YYYY-MM-DD>T<HH>.parquet`` (run_utc, lead_h, member, point, variables).
 Runs not in the archive are listed in ``<raw>/ens/missing.json`` and not requested again.
 
+``build`` turns the cached runs into the interim table ``nwp_ens`` (``hourly``): per run,
+member and UTC hour, the regional hour means of 100 m wind speed and direction, as the HRES
+features are built (``wpforecast.features``).
+
 Data licence: CC BY 4.0, "ECMWF IFS ENS forecast data processed by dynamical.org from ECMWF
 Open Data".
 """
@@ -28,6 +32,10 @@ from wpforecast.config import Config
 log = logging.getLogger(__name__)
 
 MISSING = "missing.json"
+INTERIM = "nwp_ens"
+U, V = "wind_u_100m", "wind_v_100m"
+SPEED, DIRECTION = "wind_speed_100m", "wind_direction_100m"
+REGIONS = ("onshore", "offshore")
 
 
 def open_dataset(cfg: Config) -> xr.Dataset:
@@ -132,3 +140,60 @@ def load(cfg: Config) -> pd.DataFrame:
     if not frames:
         raise FileNotFoundError(f"no ENS runs under {cfg.paths.raw / 'ens'}; run `make ens`")
     return pd.concat(frames, ignore_index=True)
+
+
+def cached(cfg: Config) -> bool:
+    return any(run_path(cfg.paths.raw, r).exists() for r in run_times(cfg))
+
+
+def hourly(cfg: Config, run: pd.DataFrame) -> pd.DataFrame:
+    """One run: per member and hour, regional hour means of 100 m speed and direction.
+
+    The 3-hourly u, v are interpolated linearly to every hour. Speed is taken per point and
+    instant; the hour [t, t + 1 h) is the mean of its two ends, as for HRES; regions average
+    their points; the direction comes from the regional mean u, v."""
+    points = list(cfg.points)
+    leads = np.sort(run["lead_h"].unique()).astype(int)
+    members = np.sort(run["member"].unique())
+    index = pd.MultiIndex.from_product([members, points, leads])
+    cube = run.set_index(["member", "point", "lead_h"])[[U, V]].reindex(index)
+    shape = (len(members), len(points), len(leads))
+    u, v = (cube[c].to_numpy(dtype=float).reshape(shape) for c in (U, V))
+
+    hours = np.arange(leads[0], leads[-1] + 1)
+    i = np.clip(np.searchsorted(leads, hours, side="right") - 1, 0, len(leads) - 2)
+    w = (hours - leads[i]) / (leads[i + 1] - leads[i])
+    u, v = (a[..., i] * (1 - w) + a[..., i + 1] * w for a in (u, v))
+    speed = np.hypot(u, v)
+
+    def hour_mean(a: np.ndarray) -> np.ndarray:
+        return (a[..., :-1] + a[..., 1:]) / 2
+
+    start = run["run_utc"].iloc[0]
+    out = {
+        "run_utc": start,
+        "time_utc": np.tile(start + pd.to_timedelta(hours[:-1], unit="h"), len(members)),
+        "member": np.repeat(members, len(hours) - 1),
+    }
+    for region in REGIONS:
+        on = np.array([cfg.points[p].region == region for p in points])
+        mean_u, mean_v = (hour_mean(a)[:, on].mean(axis=1) for a in (u, v))
+        out[f"{SPEED}@{region}"] = hour_mean(speed)[:, on].mean(axis=1).ravel()
+        out[f"{DIRECTION}@{region}"] = (np.rad2deg(np.arctan2(-mean_u, -mean_v)) % 360).ravel()
+    frame = pd.DataFrame(out)
+    values = [c for c in frame.columns if "@" in c]
+    return frame.astype({c: np.float32 for c in values})
+
+
+def build(cfg: Config) -> Path:
+    """The interim table ``nwp_ens`` from every cached run."""
+    paths = [run_path(cfg.paths.raw, r) for r in run_times(cfg)]
+    frames = [hourly(cfg, pd.read_parquet(p)) for p in paths if p.exists()]
+    if not frames:
+        raise FileNotFoundError(f"no ENS runs under {cfg.paths.raw / 'ens'}; run `make ens`")
+    table = pd.concat(frames, ignore_index=True)
+    out = cfg.paths.interim / f"{INTERIM}.parquet"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    table.to_parquet(out, index=False)
+    log.info("ens: %d runs, %d rows -> %s", len(frames), len(table), out)
+    return out

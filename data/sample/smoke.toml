@@ -1,7 +1,7 @@
 # Smoke-run config: inherits config.toml and runs the whole pipeline offline on a small
 # committed slice of real DK1 data (UTC days 2025-03-08 .. 2025-03-31). The slice covers
 # single-price imbalance settlement (from 2025-03-19) and the spring DST day (2025-03-30).
-# Refresh it with `make sample` (downloads ~25 runs and 6 EDS chunks).
+# Refresh it with `make sample` (downloads ~25 HRES runs, 24 ENS runs and 6 EDS chunks).
 base = "../../config.toml"
 
 [paths]
@@ -15,6 +15,9 @@ reports = "outputs/smoke/reports"
 start = 2025-03-08
 end = 2025-03-31
 offline = true
+
+[nwp.ensemble]
+start = 2025-03-08            # ENS runs in the sample (data/sample/raw/ens)
 
 [dates]
 train_start = 2025-03-14

@@ -78,3 +78,18 @@ def test_offline_refuses_ens_download(cfg, tmp_path):
     )
     with pytest.raises(FileNotFoundError, match="offline"):
         ens.download(offline, lambda _: _archive())
+
+
+def test_hourly_interpolates_and_averages_like_hres(cfg, tmp_path):
+    cfg = _config(cfg, tmp_path)
+    ens.download(cfg, lambda _: _archive())
+    start = ens.run_times(cfg)[0]
+    table = ens.hourly(cfg, pd.read_parquet(ens.run_path(cfg.paths.raw, start)))
+    assert len(table) == 4 * cfg.nwp.ensemble.max_lead_h  # members x hours 0..71
+    row = table[(table["member"] == 2) & (table["time_utc"] == start + pd.Timedelta(hours=10))]
+    u = 2 + 10.5 / 1000  # linear in lead between 9 h and 12 h, mean over [10 h, 11 h)
+    assert row["wind_speed_100m@onshore"].item() == pytest.approx(np.sqrt(2) * u, rel=1e-4)
+    assert row["wind_direction_100m@offshore"].item() == pytest.approx(315.0)  # u > 0, v < 0
+
+    out = ens.build(cfg)
+    assert len(pd.read_parquet(out)) == 2 * len(table)  # the two archived runs

@@ -11,6 +11,8 @@ and without curtailed hours, on
 - sharpness: the coverage and mean width of central prediction intervals;
 - PIT histograms (randomised ranks of the observation among the 99 quantiles);
 - Diebold-Mariano tests on daily mean CRPS differences, with a Newey-West variance.
+- with ENS models (Step 8): the CRPS change from adding the ENS spread to each layer, and
+  spread-skill: the RMSE of the point forecast against the predicted spread, in bins.
 
 Days are the resampling unit because errors within a day are strongly dependent.
 """
@@ -34,6 +36,7 @@ log = logging.getLogger(__name__)
 REPORT = "evaluation.md"
 FIGURES = "evaluation"
 REFERENCE = "climatology"
+RAW_ENSEMBLE, HRES_CURVE, WITH_SPREAD = "ens_raw", "curve_rls", "_ens"
 
 
 def scored_rows(fc: pd.DataFrame) -> pd.DataFrame:
@@ -216,6 +219,98 @@ def versus_energinet(cfg: Config, rows: pd.DataFrame) -> pd.DataFrame | None:
     return table
 
 
+# --- ensemble (Step 8) -----------------------------------------------------------------------
+
+
+def ensemble_pairs(cfg: Config, rows: pd.DataFrame) -> pd.DataFrame | None:
+    """Each layer with the ENS spread against itself without; the raw ensemble against the
+    HRES curve. DM < 0: the ENS model is better."""
+    names = list(dict.fromkeys(rows["model"]))
+    pairs = [(n.removesuffix(WITH_SPREAD), n) for n in names if n.endswith(WITH_SPREAD)]
+    if RAW_ENSEMBLE in names and HRES_CURVE in names:
+        pairs.insert(0, (HRES_CURVE, RAW_ENSEMBLE))
+    pairs = [(a, b) for a, b in pairs if a in names]
+    if not pairs:
+        return None
+    daily = rows.pivot_table(index="target_day", columns="model", values="crps", aggfunc="mean")
+    crps = rows.groupby("model")["crps"].mean()
+    out = []
+    for base, ens in pairs:
+        stat, p = diebold_mariano((daily[ens] - daily[base]).to_numpy(), cfg.evaluation.dm_max_lag)
+        out.append(
+            {
+                "model": ens,
+                "against": base,
+                "crps_without": crps[base],
+                "crps_with": crps[ens],
+                "change": crps[ens] / crps[base] - 1,
+                "dm": stat,
+                "p": p,
+            }
+        )
+    return pd.DataFrame(out).set_index("model")
+
+
+def predicted_spread(cfg: Config, rows: pd.DataFrame) -> np.ndarray:
+    """Standard deviation of the predictive distribution, from its 99 quantiles."""
+    return rows[[scoring.qcol(x) for x in scoring.crps_levels(cfg)]].to_numpy().std(axis=1)
+
+
+def _binned(x: pd.Series, sq_error: pd.Series, bins: int) -> pd.DataFrame:
+    """Mean x and RMSE per bin of equal size by x."""
+    b = pd.qcut(x.rank(method="first"), bins, labels=False)
+    return (
+        pd.DataFrame({"x": x, "se": sq_error})
+        .groupby(b)
+        .agg(x=("x", "mean"), rmse=("se", lambda e: math.sqrt(e.mean())))
+    )
+
+
+def _spread_skill_figure(cfg: Config, rows: pd.DataFrame, out: Path) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    bins = cfg.evaluation.spread_bins
+    ens = rows[rows["model"] == RAW_ENSEMBLE].set_index(["issue_time_utc", "time_utc"])
+    hres = rows[rows["model"] == HRES_CURVE].set_index(["issue_time_utc", "time_utc"])
+    spread = pd.Series(predicted_spread(cfg, ens.reset_index()), ens.index)
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.2))
+    ax = axes[0]
+    for label, err in (("HRES curve (curve_rls)", hres["sq_error"]), ("ENS mean", ens["sq_error"])):
+        b = _binned(spread, err.reindex(spread.index), bins)
+        ax.plot(b["x"], b["rmse"], marker="o", ms=3, label=label)
+    ax.set(
+        xlabel="raw ENS spread (std of member powers)",
+        ylabel="RMSE of the point forecast",
+        title="Does the ENS spread predict the error?",
+    )
+    ax.legend(fontsize=8, frameon=False)
+
+    ax = axes[1]
+    with_spread = [n for n in dict.fromkeys(rows["model"]) if n.endswith(WITH_SPREAD)]
+    bases = [RAW_ENSEMBLE, *(n.removesuffix(WITH_SPREAD) for n in with_spread)]
+    for name in [RAW_ENSEMBLE, *(x for n in with_spread for x in (n.removesuffix(WITH_SPREAD), n))]:
+        g = rows[rows["model"] == name]
+        b = _binned(pd.Series(predicted_spread(cfg, g), g.index), g["sq_error"], bins)
+        color = f"C{bases.index(name.removesuffix(WITH_SPREAD))}"
+        style = "--" if name.endswith(WITH_SPREAD) else "-"
+        ax.plot(b["x"], b["rmse"], style, marker="o", ms=3, color=color, label=name)
+    top = ax.get_xlim()[1]
+    for a in axes:
+        a.plot([0, top], [0, top], color="0.6", lw=0.8)
+    ax.set(
+        xlabel="predicted spread (std of the 99 quantiles)",
+        title="Spread-skill per model (diagonal = consistent)",
+    )
+    ax.legend(fontsize=7, frameon=False, ncol=2)
+    fig.tight_layout()
+    fig.savefig(out / "spread_skill.png", dpi=150)
+    plt.close(fig)
+
+
 # --- figures --------------------------------------------------------------------------------
 
 
@@ -335,7 +430,10 @@ def run(cfg: Config, fc: pd.DataFrame) -> Path:
     pits = {n: pit(cfg, g, rng) for n, g in rows.groupby("model", sort=False)}
     dm = dm_matrix(cfg, rows)
     energinet = versus_energinet(cfg, rows)
+    pairs = ensemble_pairs(cfg, rows)
     _figures(cfg, rows, rel, pits, figs)
+    if pairs is not None and RAW_ENSEMBLE in pairs.index:
+        _spread_skill_figure(cfg, rows, figs)
 
     d = cfg.dates
     band = f"{cfg.evaluation.band:.0%}"
@@ -374,6 +472,30 @@ def run(cfg: Config, fc: pd.DataFrame) -> Path:
             _md(energinet, fmt),
             "",
         ]
+    if pairs is not None:
+        text += [
+            "## Ensemble NWP (Step 8)",
+            "",
+            "Each `_ens` layer adds the spread of the ECMWF ENS members' power (51 members "
+            "through the same RLS curve) as a covariate; `ens_raw` is the members' quantiles "
+            "without post-processing, against the HRES curve with empirical errors. DM < 0: "
+            "the ENS model is better.",
+            "",
+            _md(
+                pairs,
+                {
+                    "against": "{}",
+                    "crps_without": "{:.4f}",
+                    "crps_with": "{:.4f}",
+                    "change": "{:+.1%}",
+                    "dm": "{:+.2f}",
+                    "p": "{:.3f}",
+                },
+            ),
+            "",
+        ]
+        if RAW_ENSEMBLE in pairs.index:
+            text += [f"![Spread-skill]({FIGURES}/spread_skill.png)", ""]
     text += [
         "## Diebold–Mariano tests on daily mean CRPS",
         "",

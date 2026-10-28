@@ -87,6 +87,7 @@ class Ensemble:
     step_h: int
     max_lead_h: int
     workers: int
+    availability_lag_h: int
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,7 @@ class Evaluation:
     min_hours_per_horizon: int
     dm_max_lag: int
     seed: int
+    spread_bins: int
 
 
 @dataclass(frozen=True)
@@ -349,6 +351,7 @@ def _validate(cfg: Config) -> None:
     _check(ens.start <= data.end, "[nwp.ensemble] start is after [data] end")
     _check(ens.max_lead_h % ens.step_h == 0, "[nwp.ensemble] max_lead_h must be k * step_h")
     _check(ens.workers >= 1, "[nwp.ensemble] workers must be >= 1")
+    _check(ens.availability_lag_h >= 0, "[nwp.ensemble] availability_lag_h must be >= 0")
 
     _check(any(p.region == "onshore" for p in cfg.points.values()), "[points] need onshore points")
     for name, p in cfg.points.items():
@@ -420,6 +423,7 @@ def _validate(cfg: Config) -> None:
         "[evaluation] each interval's lower end must be a reporting quantile level",
     )
     _check(ev.pit_bins >= 2 and ev.dm_max_lag >= 0, "[evaluation] pit_bins >= 2, dm_max_lag >= 0")
+    _check(ev.spread_bins >= 2, "[evaluation] spread_bins must be >= 2")
 
     mk = cfg.market
     _check(mk.pricing == "single", "[market] only single pricing is supported")

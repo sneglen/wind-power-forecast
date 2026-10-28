@@ -36,6 +36,7 @@ def test_pipeline_end_to_end(cfg):
         "curve_walk_forward",
         "curve_rls",
         *pipeline.PROBABILISTIC,
+        *pipeline.ENSEMBLE,  # the sample carries ENS runs
     }
     assert fc.loc[fc["model"] == "curve_frozen", "period"].isin(["test", "stress"]).all()
     tuning = json.loads((cfg.paths.outputs / pipeline.TUNING).read_text())
@@ -49,8 +50,8 @@ def test_pipeline_end_to_end(cfg):
     assert metrics["models"]["climatology"]["crps_skill"] == 0
     assert "| persistence |" in (cfg.paths.outputs / pipeline.SCORES).read_text()
     report = (cfg.paths.reports / evaluation.REPORT).read_text()
-    assert "## Diebold" in report and "energinet" in report
-    for figure in ("skill_by_horizon", "reliability", "pit", "sharpness"):
+    assert "## Diebold" in report and "energinet" in report and "## Ensemble NWP" in report
+    for figure in ("skill_by_horizon", "reliability", "pit", "sharpness", "spread_skill"):
         assert (cfg.paths.reports / evaluation.FIGURES / f"{figure}.png").stat().st_size > 0
     market_report = (cfg.paths.reports / market.REPORT).read_text()
     assert "## Position against the system" in market_report and "energinet" in market_report

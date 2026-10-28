@@ -73,6 +73,9 @@ variables = ["wind_u_100m", "wind_v_100m"]
 members = 51
 resolution_deg = 0.25
 step_h = 3                    # 3-hourly to 144 h; interpolated to hourly in Step 8
+# ECMWF disseminates the 00 UTC ENS to step 144 by 07:04 UTC and open data follow one hour
+# later (dissemination schedule, checked 2026-10-28): usable from 09:00 UTC, the summer issue.
+availability_lag_h = 9
 max_lead_h = 72               # same reach as HRES
 workers = 4                   # runs fetched in parallel (~4 s each, one chunk per variable)
 
@@ -183,6 +186,7 @@ pit_bins = 10
 min_hours_per_horizon = 30   # by-horizon plots skip rare k (k = 38: autumn DST days only)
 dm_max_lag = 7                # Newey-West lags (days) for the Diebold-Mariano variance
 seed = 0                      # bootstrap and PIT randomisation
+spread_bins = 10              # Step 8 spread-skill plot: bins of equal size by predicted spread
 
 [market]
 # Step 7: imbalance cost of day-ahead bids under DK1 single pricing (EUR per MWh produced).

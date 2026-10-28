@@ -6,10 +6,10 @@ Day-ahead forecasts of DK1 wind power as calibrated, self-adapting predictive di
 (recursive least squares, time-adaptive quantile regression, bounded distributions), and what
 that uncertainty is worth in the DK1 single-price imbalance market. Data: 2024–2026.
 
-> **Status:** Steps 0–7 are done on the full data (2024-03 to 2026-10): three references,
+> **Status:** Steps 0–8 are done on the full data (2024-03 to 2026-10): three references,
 > frozen, walk-forward and recursive power curves, three predictive distributions, the
-> test-year evaluation and the DK1 single-price market backtest. The extensions (ensemble
-> NWP, Thor) follow.
+> test-year evaluation, the DK1 single-price market backtest and the ECMWF ensemble
+> extension. The Thor regime-change demo (Step 9) follows.
 
 Developed with AI assistance (Claude Code); modelling choices and their reasons are mine and
 recorded in [DECISIONS.md](DECISIONS.md).
@@ -33,7 +33,8 @@ make all       # full pipeline on the downloaded data
 ```
 
 Individual stages: `make data`, `make features`, `make backtest`, `make evaluate`,
-`make market`, `make figures`.
+`make market`, `make figures`. `make ens` downloads the ECMWF ensemble (about 30 min, 72 MB;
+included in the snapshot), and `make data` then builds its table from the cache.
 Any target accepts another config: `make all CONFIG=path/to/config.toml`.
 
 Making a change: `make lint test`, commit, then `git push && make ci-watch` to confirm the
@@ -315,9 +316,48 @@ of our short hours and in 27 % of our long hours.
 
 ## Extensions
 
-### ECMWF ensemble mean vs HRES
+### ECMWF ensemble (ENS) as an input
 
-_Pending._
+ECMWF's 51-member ensemble (00 UTC, 0.25°, via dynamical.org) makes the uncertainty depend on
+the weather, the job of WindFor's ensemble module. The run is public by about 08:00 UTC, so
+the D−1 run is always ready for the 11:00 issue (D-039). The 3-hourly 100 m winds are
+interpolated to hours, and each member goes through the same RLS power curve as HRES. That
+gives two things:
+
+- **a raw-ensemble benchmark** (`ens_raw`): the 51 member powers as the forecast, with no
+  post-processing;
+- **a spread covariate** for each Step 5 layer (`_ens`): s, the standard deviation of the
+  member powers. Quantile regression adds B(p) s to its basis, the logit-normal adds s to
+  log σ, and LightGBM takes s as a feature (D-040).
+
+Test year, on the same 8,664 hours as the evaluation above (the full table is in
+[reports/evaluation.md](reports/evaluation.md#ensemble-nwp-step-8)):
+
+| Model | CRPS without ENS → with | Change | Diebold–Mariano (p) | 90 % interval coverage |
+|---|---|---|---|---|
+| Raw ensemble vs HRES curve | 0.0421 → 0.0406 | −3.6 % | −2.96 (0.003) | 84 % → 82 % |
+| Quantile regression | 0.0419 → 0.0412 | −1.6 % | −2.72 (0.007) | 84 % → 84 % |
+| Logit-normal | 0.0416 → 0.0416 | 0.0 % | +0.03 (0.98) | 89 % → 88 % |
+| LightGBM | 0.0413 → 0.0407 | −1.5 % | −3.24 (0.001) | 74 % → 76 % |
+
+- **The spread carries information.** Binned by the raw ensemble spread, the RMSE of the
+  HRES forecast rises steadily, from 2 % to 11 % of capacity
+  ([spread–skill](reports/evaluation/spread_skill.png)). Two of the three layers improve
+  significantly with it. The logit-normal does not: its σ already depends on p̂ and k, and
+  one extra term in log σ adds nothing.
+- **The raw ensemble is the best model of the test year** (CRPS 0.0406, skill +67.8 %), and
+  its mean is a better point forecast than HRES: RMSE 8.10 % against 8.18 %. Averaging 51
+  members removes noise that a single run keeps. It is still under-dispersive: its 90 %
+  interval covers 82 %, and the spread–skill points lie above the diagonal.
+- **Validation disagreed.** On the 90 winter days of validation, the raw ensemble was worse
+  than the curve (0.0370 against 0.0346). The test year contains all seasons and decides
+  here; that it was not visible beforehand is reported, not tuned for.
+- **Next:** the ensemble mean as the curve's input, or the plan's optional adaptive HRES +
+  ENS-mean combination (a miniature of ENFOR's forecast combination), should lower the point
+  error too. Neither is done yet.
+- **Imbalance cost** (Step 7) is unchanged in kind. The raw ensemble's better point
+  forecast costs more (3.66 against 3.30 EUR/MWh for the median bid), which fits the
+  covariance mechanism.
 
 ### Thor: adapting to a regime change
 
@@ -349,12 +389,13 @@ Makefile                  data | features | backtest | evaluate | market | figur
 src/wpforecast/
   config.py               typed, validated config loading
   pipeline.py             pipeline stages
-  data/                   eds.py · openmeteo.py · capacity.py · build.py · checks.py
+  data/                   eds.py · openmeteo.py · ens.py · capacity.py · build.py · checks.py
   features.py             issue times, horizons, periods; the issue-time feature table
   backtest.py             event loop: observe -> fit/update -> predict
   models/                 baselines.py (climatology, persistence, new reference),
                           power_curve.py (B-spline curve, RLS with forgetting),
-                          probabilistic.py (quantile regression, logit-normal, LightGBM)
+                          probabilistic.py (quantile regression, logit-normal, LightGBM,
+                          raw ENS; each layer optionally with the ENS spread)
   scoring.py              CRPS, pinball loss, coverage, MAE, skill
   evaluation.py           test-year report: bootstrap bands, reliability, PIT, Diebold-Mariano
   market.py               DK1 single-price imbalance cost of day-ahead bids
@@ -395,6 +436,9 @@ Design choices, with reasons and rejected alternatives, are recorded in
   wind farm operators under a one-price balancing scheme. arXiv:2505.05153.
 - H. Aa. Nielsen (2013). Forecasts of actual imbalance unit costs and simulated 5-minute
   prices for the two Danish Nord Pool price areas.
+- T. Gneiting, A. E. Raftery, A. H. Westveld, T. Goldman (2005). Calibrated probabilistic
+  forecasting using ensemble model output statistics and minimum CRPS estimation.
+  *Monthly Weather Review* 133(5).
 - T. Gneiting, A. E. Raftery (2007). Strictly proper scoring rules, prediction, and
   estimation. *JASA* 102(477).
 

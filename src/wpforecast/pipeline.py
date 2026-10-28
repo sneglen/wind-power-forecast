@@ -27,7 +27,12 @@ from wpforecast.config import Config
 from wpforecast.data import checks, ens
 from wpforecast.models.baselines import Climatology, NewReference, Persistence
 from wpforecast.models.power_curve import REGIONS, PowerCurve
-from wpforecast.models.probabilistic import GradientBoosting, LogitNormal, QuantileRegression
+from wpforecast.models.probabilistic import (
+    GradientBoosting,
+    LogitNormal,
+    QuantileRegression,
+    RawEnsemble,
+)
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +46,7 @@ CURVE_TRAJECTORY = "power_curve_trajectory.png"
 FAN_CHART = "fan_chart_stormy_week.png"
 PROBABILISTIC = ("quantreg", "logitnormal", "lightgbm")
 BASELINES = ("climatology", "persistence", "new_reference")
+ENSEMBLE = ("ens_raw", "quantreg_ens", "logitnormal_ens", "lightgbm_ens")
 REFERENCE = "climatology"
 
 
@@ -51,8 +57,12 @@ def _require(path: Path, hint: str) -> Path:
 
 
 def run_data(cfg: Config) -> Path:
-    """Download what is missing, build the interim tables and write the data-check report."""
+    """Download what is missing, build the interim tables and write the data-check report.
+
+    ENS runs are not downloaded here (``ens``), but cached ones are built into a table."""
     data.acquire(cfg)
+    if ens.cached(cfg):
+        ens.build(cfg)
     return cfg.paths.interim
 
 
@@ -63,9 +73,9 @@ def run_check(cfg: Config) -> Path:
 
 
 def run_ens(cfg: Config) -> Path:
-    """Download ECMWF ENS point values (Extension A); separate from `data`, not in `all`."""
+    """Download ECMWF ENS point values (Extension A) and build their hourly table."""
     ens.download(cfg)
-    return cfg.paths.raw / "ens"
+    return ens.build(cfg)
 
 
 def run_features(cfg: Config) -> Path:
@@ -73,13 +83,14 @@ def run_features(cfg: Config) -> Path:
     return features.run(cfg)
 
 
-def power_curve(cfg: Config, name: str, forgetting: float) -> PowerCurve:
+def power_curve(cfg: Config, name: str, forgetting: float, ensemble: bool = False) -> PowerCurve:
     return PowerCurve(
         name,
         cfg.model.rls,
         forgetting,
         scoring.crps_levels(cfg),
         cfg.model.baselines.min_error_samples,
+        ensemble,
     )
 
 
@@ -102,15 +113,18 @@ def tune_forgetting(cfg: Config, table: pd.DataFrame) -> tuple[float, dict[str, 
     return float(best), rmse
 
 
-def models(cfg: Config, forgetting: float) -> list[tuple[Model, str, dt.date]]:
-    """Every model in the backtest, with its adaptivity regime and first target day."""
+def models(
+    cfg: Config, forgetting: float, ensemble: bool = False
+) -> list[tuple[Model, str, dt.date]]:
+    """Every model in the backtest, with its adaptivity regime and first target day; with
+    ``ensemble`` also the ENS benchmark and the layers with the ENS spread (Step 8)."""
     levels = scoring.crps_levels(cfg)
     m = cfg.model
     n = m.baselines.min_error_samples
     first = cfg.dates.train_start
     layer = (scoring.fit_levels(cfg), levels, m.probabilistic.min_train_rows)
     k_max = cfg.issue.max_horizon_h
-    return [
+    out = [
         (Climatology(levels), "walk_forward", first),
         (Persistence(levels, n), "walk_forward", first),
         (NewReference(levels, n, cfg.issue.power_lag_h), "walk_forward", first),
@@ -142,6 +156,23 @@ def models(cfg: Config, forgetting: float) -> list[tuple[Model, str, dt.date]]:
             first,
         ),
     ]
+    if not ensemble:
+        return out
+
+    def curve(name: str) -> PowerCurve:
+        return power_curve(cfg, name, forgetting, ensemble=True)
+
+    ens_models: list[Model] = [
+        RawEnsemble("ens_raw", curve("ens_raw"), levels),
+        QuantileRegression(
+            "quantreg_ens", curve("quantreg_ens"), *layer, m.quantreg, k_max, ensemble=True
+        ),
+        LogitNormal(
+            "logitnormal_ens", curve("logitnormal_ens"), *layer, m.logitnormal, k_max, True
+        ),
+        GradientBoosting("lightgbm_ens", curve("lightgbm_ens"), *layer, m.gbm, ensemble=True),
+    ]
+    return out + [(model, "recursive", first) for model in ens_models]
 
 
 def run_backtest(cfg: Config) -> Path:
@@ -156,7 +187,8 @@ def run_backtest(cfg: Config) -> Path:
     )
 
     frames, params = [], []
-    for model, regime, first in models(cfg, forgetting):
+    ensemble = bool(features.ensemble_members(table.columns))
+    for model, regime, first in models(cfg, forgetting, ensemble):
         frames.append(backtest.run(cfg, model, table, regime, first, last))
         if isinstance(model, PowerCurve):
             params.append(_trajectory(model))

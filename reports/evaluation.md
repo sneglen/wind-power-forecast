@@ -17,6 +17,10 @@ Skill = 1 − CRPS / CRPS(climatology); [lo, hi] = 90% day-block bootstrap band.
 | quantreg | 8664 | 0.0419 | 5.56 | 8.18 | +66.7% | +64.2% | +69.0% | 45.9% | 0.078 | 74.4% | 0.151 | 84.2% | 0.200 |
 | logitnormal | 8664 | 0.0416 | 5.56 | 8.18 | +67.0% | +64.4% | +69.2% | 53.2% | 0.089 | 81.2% | 0.175 | 89.1% | 0.225 |
 | lightgbm | 8664 | 0.0413 | 5.56 | 8.18 | +67.2% | +64.6% | +69.5% | 35.8% | 0.059 | 64.2% | 0.114 | 74.0% | 0.144 |
+| ens_raw | 8664 | 0.0406 | 5.47 | 8.10 | +67.8% | +65.2% | +70.1% | 48.6% | 0.087 | 74.6% | 0.165 | 82.4% | 0.208 |
+| quantreg_ens | 8664 | 0.0412 | 5.56 | 8.18 | +67.3% | +64.8% | +69.5% | 45.8% | 0.079 | 74.2% | 0.149 | 83.9% | 0.195 |
+| logitnormal_ens | 8664 | 0.0416 | 5.56 | 8.18 | +67.0% | +64.4% | +69.3% | 50.6% | 0.084 | 79.0% | 0.163 | 87.6% | 0.211 |
+| lightgbm_ens | 8664 | 0.0407 | 5.56 | 8.18 | +67.7% | +65.1% | +70.0% | 40.0% | 0.065 | 66.3% | 0.121 | 75.8% | 0.151 |
 
 ## Excluding curtailed hours (day-ahead price ≤ 0)
 
@@ -31,6 +35,10 @@ Skill = 1 − CRPS / CRPS(climatology); [lo, hi] = 90% day-block bootstrap band.
 | quantreg | 8162 | 0.0360 | +71.9% | 4.86 | 6.61 |
 | logitnormal | 8162 | 0.0359 | +72.0% | 4.86 | 6.61 |
 | lightgbm | 8162 | 0.0353 | +72.5% | 4.86 | 6.61 |
+| ens_raw | 8162 | 0.0340 | +73.5% | 4.69 | 6.36 |
+| quantreg_ens | 8162 | 0.0354 | +72.4% | 4.86 | 6.61 |
+| logitnormal_ens | 8162 | 0.0358 | +72.1% | 4.86 | 6.61 |
+| lightgbm_ens | 8162 | 0.0347 | +73.0% | 4.86 | 6.61 |
 
 ## Point forecasts against Energinet's day-ahead forecast
 
@@ -47,24 +55,45 @@ On the 8472 hours Energinet's forecast covers. It is issued at 18:00 on D−1 wi
 | quantreg | 5.58 | 8.22 |
 | logitnormal | 5.58 | 8.22 |
 | lightgbm | 5.58 | 8.22 |
+| ens_raw | 5.50 | 8.15 |
+| quantreg_ens | 5.58 | 8.22 |
+| logitnormal_ens | 5.58 | 8.22 |
+| lightgbm_ens | 5.58 | 8.22 |
 | energinet, as published | 7.45 | 9.96 |
 | energinet, recalibrated (1.33 F -227 MW) | 4.97 | 6.91 |
+
+## Ensemble NWP (Step 8)
+
+Each `_ens` layer adds the spread of the ECMWF ENS members' power (51 members through the same RLS curve) as a covariate; `ens_raw` is the members' quantiles without post-processing, against the HRES curve with empirical errors. DM < 0: the ENS model is better.
+
+| model | against | crps_without | crps_with | change | dm | p |
+|---|---|---|---|---|---|---|
+| ens_raw | curve_rls | 0.0421 | 0.0406 | -3.6% | -2.96 | 0.003 |
+| quantreg_ens | quantreg | 0.0419 | 0.0412 | -1.6% | -2.72 | 0.007 |
+| logitnormal_ens | logitnormal | 0.0416 | 0.0416 | +0.0% | +0.03 | 0.978 |
+| lightgbm_ens | lightgbm | 0.0413 | 0.0407 | -1.5% | -3.24 | 0.001 |
+
+![Spread-skill](evaluation/spread_skill.png)
 
 ## Diebold–Mariano tests on daily mean CRPS
 
 Statistic of the row model minus the column model; negative means the row model is better. |DM| > 1.96 is significant at 5 % (Newey–West variance, 7 lags).
 
-| model | climatology | persistence | new_reference | curve_frozen | curve_walk_forward | curve_rls | quantreg | logitnormal | lightgbm |
-|---|---|---|---|---|---|---|---|---|---|
-| climatology | – | -0.8 | +2.9 | +12.2 | +11.8 | +11.7 | +12.0 | +12.1 | +12.0 |
-| persistence | +0.8 | – | +3.4 | +12.8 | +13.0 | +13.2 | +13.5 | +13.3 | +13.1 |
-| new_reference | -2.9 | -3.4 | – | +14.7 | +14.5 | +14.3 | +15.0 | +15.0 | +14.7 |
-| curve_frozen | -12.2 | -12.8 | -14.7 | – | -0.0 | +0.8 | +0.8 | +2.3 | +2.1 |
-| curve_walk_forward | -11.8 | -13.0 | -14.5 | +0.0 | – | +1.8 | +1.2 | +3.0 | +2.5 |
-| curve_rls | -11.7 | -13.2 | -14.3 | -0.8 | -1.8 | – | +0.4 | +1.3 | +1.4 |
-| quantreg | -12.0 | -13.5 | -15.0 | -0.8 | -1.2 | -0.4 | – | +0.6 | +0.8 |
-| logitnormal | -12.1 | -13.3 | -15.0 | -2.3 | -3.0 | -1.3 | -0.6 | – | +0.5 |
-| lightgbm | -12.0 | -13.1 | -14.7 | -2.1 | -2.5 | -1.4 | -0.8 | -0.5 | – |
+| model | climatology | persistence | new_reference | curve_frozen | curve_walk_forward | curve_rls | quantreg | logitnormal | lightgbm | ens_raw | quantreg_ens | logitnormal_ens | lightgbm_ens |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| climatology | – | -0.8 | +2.9 | +12.2 | +11.8 | +11.7 | +12.0 | +12.1 | +12.0 | +11.9 | +12.2 | +12.1 | +12.2 |
+| persistence | +0.8 | – | +3.4 | +12.8 | +13.0 | +13.2 | +13.5 | +13.3 | +13.1 | +13.8 | +13.6 | +13.3 | +13.4 |
+| new_reference | -2.9 | -3.4 | – | +14.7 | +14.5 | +14.3 | +15.0 | +15.0 | +14.7 | +14.8 | +15.3 | +14.9 | +15.1 |
+| curve_frozen | -12.2 | -12.8 | -14.7 | – | -0.0 | +0.8 | +0.8 | +2.3 | +2.1 | +2.3 | +1.6 | +2.4 | +3.2 |
+| curve_walk_forward | -11.8 | -13.0 | -14.5 | +0.0 | – | +1.8 | +1.2 | +3.0 | +2.5 | +3.1 | +2.1 | +3.0 | +3.8 |
+| curve_rls | -11.7 | -13.2 | -14.3 | -0.8 | -1.8 | – | +0.4 | +1.3 | +1.4 | +3.0 | +1.4 | +1.3 | +2.6 |
+| quantreg | -12.0 | -13.5 | -15.0 | -0.8 | -1.2 | -0.4 | – | +0.6 | +0.8 | +2.0 | +2.7 | +0.6 | +1.7 |
+| logitnormal | -12.1 | -13.3 | -15.0 | -2.3 | -3.0 | -1.3 | -0.6 | – | +0.5 | +1.5 | +0.5 | -0.0 | +2.3 |
+| lightgbm | -12.0 | -13.1 | -14.7 | -2.1 | -2.5 | -1.4 | -0.8 | -0.5 | – | +1.0 | +0.1 | -0.5 | +3.2 |
+| ens_raw | -11.9 | -13.8 | -14.8 | -2.3 | -3.1 | -3.0 | -2.0 | -1.5 | -1.0 | – | -0.9 | -1.5 | -0.2 |
+| quantreg_ens | -12.2 | -13.6 | -15.3 | -1.6 | -2.1 | -1.4 | -2.7 | -0.5 | -0.1 | +0.9 | – | -0.5 | +0.7 |
+| logitnormal_ens | -12.1 | -13.3 | -14.9 | -2.4 | -3.0 | -1.3 | -0.6 | +0.0 | +0.5 | +1.5 | +0.5 | – | +2.2 |
+| lightgbm_ens | -12.2 | -13.4 | -15.1 | -3.2 | -3.8 | -2.6 | -1.7 | -2.3 | -3.2 | +0.2 | -0.7 | -2.2 | – |
 
 ## Figures
 
