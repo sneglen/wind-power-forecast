@@ -1,9 +1,10 @@
-"""Pipeline stages: data -> features -> backtest -> evaluate -> figures.
+"""Pipeline stages: data -> features -> backtest -> evaluate -> market -> figures.
 
 ``data`` downloads, builds and checks the inputs (``wpforecast.data``). ``features`` builds
 one row per issue time x target hour from the information set at issue time
 (``wpforecast.features``). ``backtest`` runs every model through the event loop of
-``wpforecast.backtest``; ``evaluate`` scores them on the same hours (``wpforecast.scoring``).
+``wpforecast.backtest``; ``evaluate`` scores them on the same hours (``wpforecast.scoring``);
+``market`` prices their bids in the imbalance market (``wpforecast.market``).
 
 Conventions: timestamps are UTC, hour-beginning. Power is capacity-normalised to [0, 1].
 Horizon ``k`` = hours from the issue time to the END of the target hour; the day-ahead
@@ -20,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from wpforecast import backtest, data, evaluation, features, scoring
+from wpforecast import backtest, data, evaluation, features, market, scoring
 from wpforecast.backtest import Model
 from wpforecast.config import Config
 from wpforecast.data import checks, ens
@@ -39,6 +40,7 @@ CURVE_BY_SECTOR = "power_curve_by_sector.png"
 CURVE_TRAJECTORY = "power_curve_trajectory.png"
 FAN_CHART = "fan_chart_stormy_week.png"
 PROBABILISTIC = ("quantreg", "logitnormal", "lightgbm")
+BASELINES = ("climatology", "persistence", "new_reference")
 REFERENCE = "climatology"
 
 
@@ -221,6 +223,12 @@ def run_evaluate(cfg: Config) -> Path:
     return out
 
 
+def run_market(cfg: Config) -> Path:
+    """Imbalance cost of day-ahead bids under DK1 single pricing (Step 7)."""
+    fc = pd.read_parquet(_require(cfg.paths.outputs / FORECASTS, "Run `make backtest` first."))
+    return market.run(cfg, fc, ("curve_rls", *PROBABILISTIC), BASELINES)
+
+
 def score_table(metrics: dict) -> str:
     """Markdown summary of ``metrics.json``."""
     lines = [
@@ -378,10 +386,11 @@ STAGES = {
     "features": run_features,
     "backtest": run_backtest,
     "evaluate": run_evaluate,
+    "market": run_market,
     "figures": run_figures,
 }
 
 
 def run_all(cfg: Config) -> None:
-    for name in ("data", "features", "backtest", "evaluate", "figures"):  # data runs the check
+    for name in ("data", "features", "backtest", "evaluate", "market", "figures"):  # data checks
         STAGES[name](cfg)

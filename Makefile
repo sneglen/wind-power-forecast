@@ -3,7 +3,7 @@ CONFIG ?= config.toml
 SNAPSHOT ?= data-2026-10-25
 RUN := uv run wpforecast
 
-.PHONY: help install data data-snapshot check ens features backtest evaluate figures all smoke sample lint test ci-watch clean
+.PHONY: help install data data-snapshot check ens features backtest evaluate market figures all smoke sample lint test ci-watch clean
 
 help:  ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -33,10 +33,13 @@ backtest:  ## Issue day-ahead forecasts over [dates]
 evaluate:  ## Score out-of-sample forecasts
 	$(RUN) evaluate --config $(CONFIG)
 
+market:  ## Imbalance cost of day-ahead bids under DK1 single pricing
+	$(RUN) market --config $(CONFIG)
+
 figures:  ## Render figures from the evaluation
 	$(RUN) figures --config $(CONFIG)
 
-all:  ## Run data -> features -> backtest -> evaluate -> figures
+all:  ## Run data -> features -> backtest -> evaluate -> market -> figures
 	$(RUN) all --config $(CONFIG)
 
 smoke:  ## Full pipeline on the committed synthetic sample

@@ -185,9 +185,13 @@ dm_max_lag = 7                # Newey-West lags (days) for the Diebold-Mariano v
 seed = 0                      # bootstrap and PIT randomisation
 
 [market]
+# Step 7: imbalance cost of day-ahead bids under DK1 single pricing (EUR per MWh produced).
 area = "DK1"
 pricing = "single"            # single imbalance price
 portfolio_mw = 100.0          # price-taker portfolio producing y * 100 MW
 start = 2025-03-19            # one imbalance-price method throughout
 end = 2026-02-28
 tau_lookback_days = 60        # walk-forward choice of the bid quantile
+tau_min_days = 14             # fewer trailing days than this: bid the median
+reference_model = "logitnormal"  # the model behind the position analysis and the tau figure
+spike_eur_mwh = 1000.0        # |DA - imbalance price| above this: a scarcity hour, shown apart

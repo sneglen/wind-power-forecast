@@ -6,9 +6,10 @@ Day-ahead forecasts of DK1 wind power as calibrated, self-adapting predictive di
 (recursive least squares, time-adaptive quantile regression, bounded distributions), and what
 that uncertainty is worth in the DK1 single-price imbalance market. Data: 2024–2026.
 
-> **Status:** Steps 0–6 are done on the full data (2024-03 to 2026-10): three references,
-> frozen, walk-forward and recursive power curves, three predictive distributions, and the
-> test-year evaluation. The market backtest (Step 7) follows.
+> **Status:** Steps 0–7 are done on the full data (2024-03 to 2026-10): three references,
+> frozen, walk-forward and recursive power curves, three predictive distributions, the
+> test-year evaluation and the DK1 single-price market backtest. The extensions (ensemble
+> NWP, Thor) follow.
 
 Developed with AI assistance (Claude Code); modelling choices and their reasons are mine and
 recorded in [DECISIONS.md](DECISIONS.md).
@@ -32,7 +33,7 @@ make all       # full pipeline on the downloaded data
 ```
 
 Individual stages: `make data`, `make features`, `make backtest`, `make evaluate`,
-`make figures`.
+`make market`, `make figures`.
 Any target accepts another config: `make all CONFIG=path/to/config.toml`.
 
 Making a change: `make lint test`, commit, then `git push && make ci-watch` to confirm the
@@ -249,7 +250,64 @@ scored on the same 8,664 day-ahead product hours (361 days; 4 days have no weath
 
 ## DK1 imbalance-market backtest
 
-_Pending._
+What is the forecast's uncertainty worth in euros? A price-taking 100 MW portfolio produces
+y × 100 MW, sells a day-ahead bid b at the day-ahead price and settles the imbalance E − b at
+the DK1 single imbalance price. Hourly bids are repeated over the four 15-min settlement
+periods, against the hourly mean of the 15-min prices. There is no intraday trading. The cost
+is the revenue lost against a perfect bid:
+
+$$C = \sum_t (\lambda^{\mathrm{DA}}_t - \lambda^{\mathrm{imb}}_t)(E_t - b_t) \Big/ \sum_t E_t \quad \text{(EUR per MWh produced)}.$$
+
+The window is 2025-03-19 to 2026-02-28, 335 days and 8,040 hours under one price method. The
+full report is [reports/market.md](reports/market.md) (`make market`). The bids, all taken
+from the logit-normal's quantiles unless stated otherwise:
+
+| Bid | Cost (EUR/MWh) [90 % band] | Saving vs the median bid [90 % band] |
+|---|---|---|
+| Median (τ = 0.5) | 3.30 [2.57, 4.08] | – |
+| Mean | 3.29 | +0.01 [−0.14, +0.16] |
+| τ*: best level over the trailing 60 days | 2.62 | +0.68 [−0.57, +1.91] |
+| Newsvendor τ from trailing effective penalties | 3.75 | −0.45 [−0.92, −0.07] |
+| Persistence, median | 0.83 | +2.47 [+0.13, +4.97] |
+| Energinet as published / recalibrated | 2.44 / 2.99 | +0.87 / +0.31 |
+
+- **No best quantile exists.** With one price for both directions, the cost is linear in the
+  bid. Over the whole window, the best fixed level in hindsight is a corner: τ = 0.01.
+  Dropping the 30 hours (0.4 %) with |λ_DA − λ_imb| > 1,000 EUR/MWh moves it to the other
+  corner, τ = 0.99, because those hours flip the sign of the mean spread (−3.2 to
+  +2.8 EUR/MWh). The walk-forward τ* jumps between the corners
+  ([figure](reports/market/tau_over_time.png)), and its saving is not significant. Choosing a
+  level here is a bet on scarcity spikes, and bids that bet are speculation, which balance
+  rules do not allow.
+- **A better forecast does not lower this cost.** Persistence, with three times the MAE, is
+  cheaper than the logit-normal, and the band of the difference excludes zero. The cost
+  equals the covariance between the own error and the price spread. Our errors correlate
+  0.79 with those of Energinet's recalibrated forecast, so the market makes the same
+  mistakes, and when we are wrong the system is out of balance in the same direction. A
+  portfolio that is a scaled copy of the DK1 fleet is the extreme case. A single farm's
+  errors are partly its own and would correlate less with the system.
+- **The newsvendor rule comes back only weakly.** The effective penalties are positive in
+  both directions: +15.9 EUR/MWh per MWh short, +19.4 per MWh long. That gives
+  τ = 19.4 / (15.9 + 19.4) ≈ 0.55, close to the median. Estimated from trailing data, it
+  adds noise and costs 0.45 EUR/MWh.
+- **Conclusion:** under DK1 single pricing, bid the median (or the mean, which costs the
+  same). A sharper distribution pays off elsewhere, in less system imbalance and in products
+  with asymmetric penalties, not in this cost.
+
+![Imbalance cost against the bid level](reports/market/cost_vs_tau.png)
+
+### Why a single price breaks the textbook rule
+
+Under dual pricing, a short MWh costs ψ↑ ≥ 0 and a long MWh ψ↓ ≥ 0. The expected cost
+ψ↑ E(b − E)⁺ + ψ↓ E(E − b)⁺ is minimised by the quantile b = F⁻¹(ψ↓ / (ψ↑ + ψ↓)): this is the
+newsvendor result (Bremnes 2004; Pinson et al. 2007). Under a single price, the cost
+(λ_DA − λ_imb)(E − b) is linear in b, and ∂E[C]/∂b = E[λ_imb − λ_DA] does not depend on b.
+There is no interior optimum, only a corner that speculates on the sign of the mean spread
+(Bruninx et al. 2025). An asymmetry reappears only through correlation. If the system tends
+to be short when you are short, then ĉ↑ = E[λ_imb − λ_DA | short] and
+ĉ↓ = E[λ_DA − λ_imb | long] are both positive, and they act as dual-price penalties with
+τ = ĉ↓ / (ĉ↑ + ĉ↓). In DK1 in 2025–26 that correlation is weak: the system was short in 37 %
+of our short hours and in 27 % of our long hours.
 
 ## Extensions
 
@@ -269,7 +327,7 @@ _Pending._
   [`config.toml`](config.toml). Variant configs inherit from it with `base = "..."` and
   override only what changes (see [`data/sample/smoke.toml`](data/sample/smoke.toml)).
 - **Pipeline:** `make all` regenerates every artefact from raw data; stages are
-  `data → features → backtest → evaluate → figures`.
+  `data → features → backtest → evaluate → market → figures`.
 - **CI:** GitHub Actions runs lint (pre-commit: ruff, formatting, lock check), the test suite,
   and a smoke run of the full pipeline on a committed sample, whose outputs are uploaded as
   a build artefact. A change counts as done only when CI is green for the pushed commit:
@@ -283,7 +341,7 @@ _Pending._
 
 ```
 config.toml               dates, points, quantile grid, hyper-parameters
-Makefile                  data | features | backtest | evaluate | figures | all | smoke | test
+Makefile                  data | features | backtest | evaluate | market | figures | all | smoke | test
 src/wpforecast/
   config.py               typed, validated config loading
   pipeline.py             pipeline stages
@@ -295,13 +353,14 @@ src/wpforecast/
                           probabilistic.py (quantile regression, logit-normal, LightGBM)
   scoring.py              CRPS, pinball loss, coverage, MAE, skill
   evaluation.py           test-year report: bootstrap bands, reliability, PIT, Diebold-Mariano
+  market.py               DK1 single-price imbalance cost of day-ahead bids
   __main__.py             CLI: wpforecast <stage> --config ...
 scripts/                  utilities: CI watcher
 tests/                    unit tests, look-ahead test, end-to-end smoke test
 data/README.md            data dictionary, caveats, licences
 data/sample/              committed slice of real data + smoke config
 data/raw, data/interim    downloaded / derived data (git-ignored)
-reports/                  data-check report and figures
+reports/                  data check, test-year evaluation and market reports, with figures
 outputs/, figures/        generated artefacts (git-ignored)
 DECISIONS.md              running decision log
 CLAUDE.md                 project rules for AI-assisted work
@@ -326,6 +385,12 @@ Design choices, with reasons and rejected alternatives, are recorded in
   generalized logit–normal distributions. *JRSS Series C* 61(4).
 - P. Pinson, C. Chevallier, G. Kariniotakis (2007). Trading wind generation from short-term
   probabilistic forecasts of wind power. *IEEE Transactions on Power Systems* 22(3).
+- J. B. Bremnes (2004). Probabilistic wind power forecasts using local quantile regression.
+  *Wind Energy* 7(1).
+- K. Bruninx, M. Verstraeten, L. Helsen, J. Kazempour (2025). Day-ahead bidding strategies for
+  wind farm operators under a one-price balancing scheme. arXiv:2505.05153.
+- H. Aa. Nielsen (2013). Forecasts of actual imbalance unit costs and simulated 5-minute
+  prices for the two Danish Nord Pool price areas.
 - T. Gneiting, A. E. Raftery (2007). Strictly proper scoring rules, prediction, and
   estimation. *JASA* 102(477).
 

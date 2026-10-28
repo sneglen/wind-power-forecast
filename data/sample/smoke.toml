@@ -28,6 +28,7 @@ stress_end = 2025-03-31
 [market]
 start = 2025-03-20
 end = 2025-03-27
+tau_min_days = 3              # an 8-day window
 
 [model.baselines]
 min_error_samples = 3         # the sample has only a few days per horizon

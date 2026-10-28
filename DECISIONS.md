@@ -391,3 +391,38 @@ It is reported raw and after a linear recalibration fitted on the training perio
 8.2 %); recalibrated, it is better (6.9 %), as its later issue time predicts.
 **Not done:** model changes after seeing the test year. The weaknesses found (too narrow
 LightGBM, a high logit-normal median) are reported, not tuned away.
+
+### D-037 · 2026-10-28 · Market backtest: settlement, bids and the trailing window
+**Decision:** `market.py` prices day-ahead bids for a price-taking 100 MW portfolio producing
+y × 100 MW over 2025-03-19 to 2026-02-28 (one single-price method). The cost is the revenue
+lost against a perfect bid, Σ (λ_DA − λ_imb)(E − b) / Σ E. Hourly bids are settled against
+the hourly mean of the four 15-min imbalance prices; hours missing a quarter are dropped.
+The bids, per model, are the mean of the 99 quantiles, the median, τ* (the grid level with
+the lowest cost over the trailing 60 days) and the newsvendor level τ = ĉ↓ / (ĉ↑ + ĉ↓).
+ĉ↑ and ĉ↓ are the MWh-weighted mean premium paid per MWh short and forgone per MWh long,
+over the trailing days, with positions taken from the median bid. The trailing days end
+with D−2, the last local day complete at the issue time on D−1. They never start before the
+market window, and the median is bid until 14 days exist. Energinet's forecast is bid as
+published and recalibrated (D-036), clipped to [0, 1] of capacity. All bids are compared on
+the same hours, with curtailed hours included and also reported without. Bands use the
+day-block bootstrap of D-036, with savings computed paired by day.
+**Why:** the plan's assumptions. Flat production within the hour makes the hourly mean price
+exact, since settlement data is hourly. MWh weights make ĉ the cost per MWh that the
+newsvendor rule needs. Using D−2 needs no assumption about how fast imbalance prices are
+published. The first days after 2025-03-19 have no single-price history, hence the median.
+**Rejected:** unweighted hourly means for ĉ, which overweight small imbalances; using the
+morning of D−1, which depends on publication lags; a continuous τ, since the 99-level grid is
+finer than the noise; intraday trading, outside the plan.
+
+### D-038 · 2026-10-28 · Price spikes shown apart; cost split into covariance and bet
+**Decision:** hours with |λ_DA − λ_imb| > 1,000 EUR/MWh (`spike_eur_mwh`; 30 hours, 0.4 %)
+stay in every cost. The cost-vs-τ figure and table add a view without them. The median
+bid's cost is split into a covariance part, Σ (s − s̄)(e − ē), and a mean-spread part,
+n s̄ ē, with s = λ_DA − λ_imb and e = E − b.
+**Why:** those 30 hours flip the sign of the mean spread (−3.2 to +2.8 EUR/MWh), and with it
+the best fixed bid level, from τ = 0.01 to τ = 0.99. A single-price cost is linear in the
+bid, so any level other than the median is a bet on that sign. The split shows that the
+models' costs are almost all covariance: their errors co-move with the system's.
+**Rejected:** removing or winsorising spike hours, which are real settlements that a bidder
+pays; reporting only the hindsight-optimal τ, which would present a bet as a forecast
+property.

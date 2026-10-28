@@ -170,12 +170,12 @@ def dm_matrix(cfg: Config, rows: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
-def versus_energinet(cfg: Config, rows: pd.DataFrame) -> pd.DataFrame | None:
-    """Point MAE and RMSE (% of capacity) on the hours Energinet's day-ahead forecast covers.
+def energinet_forecast(cfg: Config) -> tuple[pd.Series, float, float] | None:
+    """Energinet's day-ahead DK1 forecast (MW) and its recalibration P = a F + b.
 
     Energinet's forecast does not cover exactly the settled production (it runs about 16 %
-    low in 2024-25), so it is shown as published and after a linear recalibration fitted
-    on the training period only, P = a F + b.
+    low in 2024-25), so it is also used after a linear recalibration fitted on the training
+    period only.
     """
     path = cfg.paths.interim / "energinet_forecast.parquet"
     if not path.exists():
@@ -185,6 +185,16 @@ def versus_energinet(cfg: Config, rows: pd.DataFrame) -> pd.DataFrame | None:
     train = dataset.loc[str(cfg.dates.train_start) : str(cfg.dates.train_end), "power_mw"]
     pairs = pd.DataFrame({"p": train, "f": energinet.reindex(train.index)}).dropna()
     a, b = np.polyfit(pairs["f"], pairs["p"], 1) if len(pairs) > 1 else (1.0, 0.0)
+    return energinet, float(a), float(b)
+
+
+def versus_energinet(cfg: Config, rows: pd.DataFrame) -> pd.DataFrame | None:
+    """Point MAE and RMSE (% of capacity) on the hours Energinet's day-ahead forecast covers,
+    as published and recalibrated (``energinet_forecast``)."""
+    found = energinet_forecast(cfg)
+    if found is None:
+        return None
+    energinet, a, b = found
 
     first = rows.drop_duplicates("time_utc").set_index("time_utc")
     published = energinet.reindex(first.index).dropna()

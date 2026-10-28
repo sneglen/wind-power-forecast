@@ -206,6 +206,9 @@ class Market:
     start: dt.date
     end: dt.date
     tau_lookback_days: int
+    tau_min_days: int
+    reference_model: str
+    spike_eur_mwh: float
 
 
 @dataclass(frozen=True)
@@ -425,6 +428,11 @@ def _validate(cfg: Config) -> None:
         d.test_start <= mk.start <= mk.end <= d.test_end,
         "[market] window must lie inside the test period",
     )
+    _check(
+        1 <= mk.tau_min_days <= mk.tau_lookback_days,
+        "[market] need 1 <= tau_min_days <= tau_lookback_days",
+    )
+    _check(mk.spike_eur_mwh > 0, "[market] spike_eur_mwh must be > 0")
 
 
 def load_config(path: str | Path) -> Config:
