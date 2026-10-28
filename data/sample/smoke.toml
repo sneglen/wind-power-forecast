@@ -39,3 +39,9 @@ min_error_samples = 3         # the sample has only a few days per horizon
 [evaluation]
 min_hours_per_horizon = 1     # an 8-day test period has 8 hours per horizon
 n_bootstrap = 200
+
+[stress]
+plot_start = 2025-03-20
+rolling_days = 2
+first_output_margin = 0.05
+events = [{ date = 2025-03-29, label = "test event" }]  # exercises the covariance reset

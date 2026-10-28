@@ -4,7 +4,7 @@ import json
 import pandas as pd
 import pytest
 
-from wpforecast import evaluation, features, market, pipeline
+from wpforecast import evaluation, features, market, pipeline, stress
 from wpforecast.config import Config
 from wpforecast.scoring import qcol
 
@@ -57,6 +57,10 @@ def test_pipeline_end_to_end(cfg):
     assert "## Position against the system" in market_report and "energinet" in market_report
     for figure in ("cost_vs_tau", "tau_over_time"):
         assert (cfg.paths.reports / market.FIGURES / f"{figure}.png").stat().st_size > 0
+    stress_report = (cfg.paths.reports / stress.REPORT).read_text()
+    assert "## Forgetting" in stress_report and stress.RESET in stress_report
+    for figure in ("rolling", "curve_level"):
+        assert (cfg.paths.reports / stress.FIGURES / f"{figure}.png").stat().st_size > 0
     costs = json.loads((cfg.paths.outputs / market.RESULTS).read_text())
     assert costs["hours"] == 24 * ((cfg.market.end - cfg.market.start).days + 1)
     assert set(costs["eur_per_mwh"]["logitnormal"]) >= set(market.STRATEGIES)

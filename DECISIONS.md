@@ -263,7 +263,7 @@ that every model forecast, with and without curtailed hours; skill is
 **Why:** one forecast serves both scores without interpolating quantiles; comparing models
 on different hours would bias skill scores.
 
-### D-028 · 2026-10-27 · Power curve: B-splines x direction, RLS with forgetting
+### D-028 · 2026-10-27 · Power curve: B-splines x direction, RLS with forgetting — *covariance bound corrected by D-043*
 **Decision:** `models/power_curve.py` models y = φᵀβ with φ = cubic B-splines of the
 regional 100 m speed (6 interior knots over 0–20 m/s onshore, 0–28 m/s offshore), each times
 [1, cos θ, sin θ] of the regional direction, plus two diurnal harmonics (64 parameters), one
@@ -505,7 +505,7 @@ solvers agree to four decimals (0.0341 each). HiGHS becomes the default because 
 exact, has no iteration cap and is twice as fast (59 s against 122 s).
 **Rejected:** a ridge penalty, which adds a hyper-parameter to tune; dropping the
 horizon interaction, which loses the growth of spread with k.
-**Effect on the test year** (full rerun; every other model unchanged): `quantreg` CRPS
+**Effect on the test year** (full rerun, still with λ = 1; every other model unchanged): `quantreg` CRPS
 0.0419 → 0.0414 (skill +66.7 % → +67.1 %); `quantreg_ens` 0.0412 → 0.0410. The ENS spread's
 gain for quantile regression shrinks from −1.6 % (DM p = 0.007) to −0.9 % (p = 0.17, not
 significant): part of the earlier gain was the spread compensating for the broken basis.
@@ -514,3 +514,71 @@ The full backtest takes 17 minutes instead of 55.
 rows, rank 25 of 27 in the smoke run) can make its redundant constraints numerically
 "infeasible". `quantile_lp` then solves the primal, which is always feasible. The full-data
 run never needed the fallback.
+
+### D-043 · 2026-10-28 · RLS covariance bounded per direction, not by its trace
+**Decision:** after each daily release of rows, `RLS.bound` clips the eigenvalues of P at δ,
+so P ≤ δI per direction (bounded-covariance RLS; Salgado, Goodwin & Middleton, 1988). This
+replaces scaling the whole of P down whenever trace(P) > trace(P₀).
+**What was wrong:** the implementation of the windup safeguard, not the model and not the
+tuning.
+- Some of the 64 directions get almost no data (rare speed × direction cells): even with
+  λ = 1, trace(P) is ~646, mostly from them.
+- With λ < 1 they inflate by 1/λ per row until the trace reaches the cap (6,400). Uniform
+  scaling then also shrinks the well-observed directions and their gain, so forgetting
+  stopped tracking anything.
+- With λ = 0.999, the curve's April 2026 level stayed at 0.257 against 0.222 in the data
+  (0.229 after the fix).
+
+λ = 1 never reaches the cap, so the frozen and walk-forward curves are unchanged. Every
+earlier λ < 1 result, including the validation tuning, compared crippled variants. Found
+in Step 9, when λ = 0.999 stayed flat through Thor's registration.
+**Effect:** validation now picks λ = 0.9999, about 270 days of memory (RMSE 0.06145 against
+0.06149 for λ = 1). `curve_rls`, the three layers and the ENS models are rebuilt on it.
+Test-year changes:
+
+| Model | CRPS before → after |
+|---|---|
+| curve_rls | 0.0421 → 0.0419 (point RMSE 8.18 → 8.09 %) |
+| quantreg | 0.0414 → 0.0411 |
+| logitnormal | 0.0416 → 0.0411 |
+| lightgbm | 0.0413 → 0.0413 |
+| quantreg_ens | 0.0410 → 0.0409 |
+| logitnormal_ens | 0.0416 → 0.0411 |
+| lightgbm_ens | 0.0407 → 0.0406 |
+| ens_raw | 0.0406 → 0.0406 |
+
+The ENS mean is no longer a better point forecast than HRES (8.08 against 8.09 %). A unit
+test now fails if an unexcited direction can stop an excited one from tracking.
+**Rejected:** clipping per row (one 64 × 64 eigendecomposition per row; within a day the
+inflation is only 1/λ³⁷ ≈ 1.004 at λ = 0.9999); directional forgetting (more machinery for
+the same effect here).
+
+### D-044 · 2026-10-28 · Regime-change demo: Thor and IFS 50r1, scored in MW
+**Decision:** `stress.py` (`make stress`) compares, over the test year and the stress period
+(2026-03-01 to the last settled day), the frozen and walk-forward curves with the RLS curve
+for every λ of the grid and with `rls_reset`: tuned λ, P reset to δI at each `[stress]`
+event. Forecasts in MW are the quantiles times the capacity known at issue time, against
+settled production. It reports bias, MAE, RMSE and CRPS in MW, trailing 14-day bias and
+CRPS, and the curve's level at 10 m/s over time.
+
+Events, dated in advance:
+- 2026-03-01: Thor in the capacity register, +1,058 MW;
+- 2026-05-13: the first 00 UTC run of IFS 50r1, implemented from the 06 UTC run of 12 May,
+  as confirmed by ECMWF.
+
+New offshore output first shows on 2026-05-15: offshore production above its maximum of
+the year before, plus 5 %. It is marked from data and never used by a model.
+**Why:** the plan's Extension B. The register counts Thor ~2.5 months before it produces,
+so y = P/C is biased low in between; MW sidesteps that. The settlement data were checked:
+DK1 offshore output reaches ~2,000–2,090 MW from June 2026, against ≤ 1,650 MW before, which
+is about half of Thor, consistent with 36 of 72 turbines by July.
+**Findings:**
+- Shorter memory tracks the change: stress bias falls from +124 MW (λ = 1) to +58 MW
+  (λ = 0.999), at a cost of 240 → 245 MW test-year CRPS.
+- The best λ by CRPS is 0.9999 on the stable test year and 0.9995 under change.
+- The full covariance reset removes the bias (+17 MW) but has the worst stress CRPS (289 MW):
+  it forgets the precision of all 64 parameters and the curve swings.
+- Thor's first output and the IFS change are two days apart, so their effects cannot be
+  separated here.
+**Rejected:** tuning λ or the reset size on the stress period, which is the evaluation;
+scoring the stress period in units of capacity.

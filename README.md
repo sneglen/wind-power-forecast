@@ -6,10 +6,10 @@ Day-ahead forecasts of DK1 wind power as calibrated, self-adapting predictive di
 (recursive least squares, time-adaptive quantile regression, bounded distributions), and what
 that uncertainty is worth in the DK1 single-price imbalance market. Data: 2024–2026.
 
-> **Status:** Steps 0–8 are done on the full data (2024-03 to 2026-10): three references,
+> **Status:** Steps 0–9 are done on the full data (2024-03 to 2026-10): three references,
 > frozen, walk-forward and recursive power curves, three predictive distributions, the
-> test-year evaluation, the DK1 single-price market backtest and the ECMWF ensemble
-> extension. The Thor regime-change demo (Step 9) follows.
+> test-year evaluation, the DK1 single-price market backtest, the ECMWF ensemble extension
+> and the Thor regime-change demo. The final report (Step 10) follows.
 
 Developed with AI assistance (Claude Code); modelling choices and their reasons are mine and
 recorded in [DECISIONS.md](DECISIONS.md).
@@ -33,7 +33,7 @@ make all       # full pipeline on the downloaded data
 ```
 
 Individual stages: `make data`, `make features`, `make backtest`, `make evaluate`,
-`make market`, `make figures`. `make ens` downloads the ECMWF ensemble (about 30 min, 72 MB;
+`make market`, `make stress`, `make figures`. `make ens` downloads the ECMWF ensemble (about 30 min, 72 MB;
 included in the snapshot), and `make data` then builds its table from the cache.
 Any target accepts another config: `make all CONFIG=path/to/config.toml`.
 
@@ -154,8 +154,9 @@ p̂(t+k | t) = φ(t+k)ᵀ β̂ₜ + a_k · (pₜ − φ(t)ᵀ β̂ₜ)
 This is a Kalman filter for parameters that drift as a random walk. Dividing P by λ inflates
 the parameter uncertainty at every step, so old observations lose weight geometrically, and
 the effective memory is about 1/(1 − λ) observations. With ~37 hourly rows per day,
-λ = 0.9995 remembers about 54 days. The start is regularised (P₀ = δI), and the trace of P is
-bounded so that the covariance cannot wind up in calm spells.
+λ = 0.9995 remembers about 54 days. The start is regularised (P₀ = δI), and P is bounded by
+δI per direction (eigenvalues clipped at δ once a day), so that parameters without data
+cannot wind up while the observed ones keep their gain (Salgado, Goodwin & Middleton, 1988).
 
 With λ = 1 the recursion gives exactly the ridge-regularised least-squares fit. That is the
 frozen twin (fitted once on the training and validation data) and the monthly walk-forward
@@ -168,10 +169,13 @@ period.
 |---|---|---|---|
 | Frozen (fitted once before the test year) | 0.0426 | +66.2 % | 0.0826 |
 | Walk-forward (refit monthly) | 0.0426 | +66.2 % | 0.0824 |
-| Recursive (RLS, updated daily) | 0.0421 | +66.6 % | 0.0818 |
+| Recursive (RLS, updated daily, λ = 0.9999) | 0.0419 | +66.7 % | 0.0809 |
 
-Validation chose λ = 1: before Thor the DK1 curve hardly drifts, so forgetting only adds
-noise, and the three regimes score almost alike. The stress period (Step 9) tests them on a
+Validation chose λ = 0.9999, a memory of about 270 days; λ = 1 is a hair behind (RMSE 0.06149
+against 0.06145). Before Thor the DK1 curve hardly drifts, so short memories only add noise,
+and the three regimes score almost alike. (Until D-043 forgetting could not track at all: a
+trace bound on P shrank the gain of every direction once the unobserved ones inflated; P is
+now bounded per direction.) The stress period (Step 9) tests them on a
 real change. Skill dips at midday horizons (k = 25–30) because up to 22 % of those hours are
 curtailed at negative prices; without curtailed hours it stays at 0.69–0.75 across k.
 
@@ -209,15 +213,15 @@ issued, so they describe the point model's real out-of-sample errors.
 
 | Distribution on the RLS curve | CRPS | CRPS skill vs climatology | 5 % / 95 % quantile coverage |
 |---|---|---|---|
-| Curve + its own error quantiles (Step 4) | 0.0421 | +66.6 % | 9.5 % / 93.6 % |
-| Quantile regression | 0.0414 | +67.1 % | 8.3 % / 92.6 % |
-| Generalised logit-normal | 0.0416 | +67.0 % | 7.0 % / 96.1 % |
-| LightGBM quantiles | 0.0413 | +67.2 % | 12.2 % / 86.2 % |
+| Curve + its own error quantiles (Step 4) | 0.0419 | +66.7 % | 9.7 % / 93.5 % |
+| Quantile regression | 0.0411 | +67.4 % | 8.5 % / 93.1 % |
+| Generalised logit-normal | 0.0411 | +67.4 % | 7.0 % / 96.5 % |
+| LightGBM quantiles | 0.0413 | +67.2 % | 12.2 % / 86.3 % |
 
 All three improve CRPS slightly. LightGBM is the sharpest but too narrow in the tails; the
 logit-normal is the best calibrated. Quantile regression's knots sit at quantiles of the
 training p̂ (D-042). With uniform knots over [0, 1], the top of the basis had almost no data,
-and storm hours got nonsense quantiles (test CRPS 0.0419 before the fix). Every model sees too many observations below its 5 %
+and storm hours got nonsense quantiles. Every model sees too many observations below its 5 %
 quantile, largely curtailed and other low-output hours; Step 6 examines calibration in full.
 
 ## Evaluation
@@ -232,25 +236,27 @@ scored on the same 8,664 day-ahead product hours (361 days; 4 days have no weath
 | Climatology | 0.126 | 0 % | 18.3 / 23.0 | 88 %, 0.68 |
 | New reference | 0.116 | +8.1 % [+5.5, +10.6] | 16.6 / 20.3 | 90 %, 0.62 |
 | Power curve, frozen | 0.0426 | +66.2 % [+63.6, +68.6] | 5.62 / 8.26 | 83 %, 0.18 |
-| Power curve, RLS | 0.0421 | +66.6 % [+63.8, +69.0] | 5.56 / 8.18 | 84 %, 0.18 |
-| Quantile regression | 0.0414 | +67.1 % [+64.7, +69.3] | 5.56 / 8.18 | 84 %, 0.20 |
-| Logit-normal | 0.0416 | +67.0 % [+64.4, +69.2] | 5.56 / 8.18 | 89 %, 0.23 |
-| LightGBM quantiles | 0.0413 | +67.2 % [+64.6, +69.5] | 5.56 / 8.18 | 74 %, 0.14 |
+| Power curve, RLS | 0.0419 | +66.7 % [+64.0, +69.1] | 5.53 / 8.09 | 84 %, 0.18 |
+| Quantile regression | 0.0411 | +67.4 % [+64.9, +69.6] | 5.53 / 8.09 | 85 %, 0.20 |
+| Logit-normal | 0.0411 | +67.4 % [+64.7, +69.5] | 5.53 / 8.09 | 90 %, 0.22 |
+| LightGBM quantiles | 0.0413 | +67.2 % [+64.7, +69.6] | 5.53 / 8.09 | 74 %, 0.14 |
 
-- **Point accuracy.** The power curve's RMSE is 8.2 % of capacity. Energinet's day-ahead
+- **Point accuracy.** The power curve's RMSE is 8.1 % of capacity. Energinet's day-ahead
   forecast, issued seven hours later with newer weather, scores 10.0 % as published, but it
   runs about 16 % low against settled production; recalibrated linearly on the training
-  period, it reaches 6.9 %. Its information edge is worth about 1.3 points of RMSE.
+  period, it reaches 6.9 %. Its information edge is worth about 1.2 points of RMSE.
 - **Significance.** Diebold–Mariano tests on daily CRPS: every curve-based model beats every
-  baseline (|DM| > 11); the logit-normal and LightGBM beat the frozen and walk-forward curves
-  (DM −2.1 to −3.0), quantile regression the walk-forward curve (−2.2); the three
-  distributions do not differ significantly from each other.
-- **Calibration versus sharpness.** LightGBM has the best CRPS but is the least reliable:
-  its 90 % interval covers 74 %. The logit-normal is close to nominal in the tails (89 %) but
-  its median sits too high (42 % of observations below it). Quantile regression is the most
-  even. CRPS rewards sharpness, so reliability is judged separately.
+  baseline (|DM| > 11); all three distributions beat the walk-forward curve (DM −2.1 to
+  −3.2), the logit-normal and LightGBM also the frozen one (−2.1), and the logit-normal the
+  RLS curve with empirical errors (−2.2); the three distributions do not differ
+  significantly from each other.
+- **Calibration versus sharpness.** The three distributions tie on CRPS (0.0411–0.0413), but
+  LightGBM is the least reliable: its 90 % interval covers 74 %. The logit-normal is close to
+  nominal in the tails (90 %) but its median sits too high (44 % of observations below it).
+  Quantile regression is the most even. CRPS rewards sharpness, so reliability is judged
+  separately.
 - **Curtailment.** Without the 6 % of curtailed hours, skill rises to 72 % and is flat across
-  horizons; with them, it dips to 47 % at midday (k = 27–28), where curtailment peaks.
+  horizons; with them, it dips to 47–50 % at midday (k = 27–28), where curtailment peaks.
 
 ## DK1 imbalance-market backtest
 
@@ -268,12 +274,12 @@ from the logit-normal's quantiles unless stated otherwise:
 
 | Bid | Cost (EUR/MWh) [90 % band] | Saving vs the median bid [90 % band] |
 |---|---|---|
-| Median (τ = 0.5) | 3.30 [2.57, 4.08] | – |
-| Mean | 3.29 | +0.01 [−0.14, +0.16] |
-| τ*: best level over the trailing 60 days | 2.62 | +0.68 [−0.57, +1.91] |
-| Newsvendor τ from trailing effective penalties | 3.75 | −0.45 [−0.92, −0.07] |
-| Persistence, median | 0.83 | +2.47 [+0.13, +4.97] |
-| Energinet as published / recalibrated | 2.44 / 2.99 | +0.87 / +0.31 |
+| Median (τ = 0.5) | 3.29 [2.57, 4.06] | – |
+| Mean | 3.25 | +0.03 [−0.10, +0.16] |
+| τ*: best level over the trailing 60 days | 2.63 | +0.65 [−0.58, +1.88] |
+| Newsvendor τ from trailing effective penalties | 3.73 | −0.44 [−0.92, −0.06] |
+| Persistence, median | 0.83 | +2.46 [+0.10, +4.94] |
+| Energinet as published / recalibrated | 2.44 / 2.99 | +0.85 / +0.30 |
 
 - **No best quantile exists.** With one price for both directions, the cost is linear in the
   bid. Over the whole window, the best fixed level in hindsight is a corner: τ = 0.01.
@@ -295,9 +301,9 @@ from the logit-normal's quantiles unless stated otherwise:
   extreme case. A single farm's errors are partly its own and would correlate less with the
   system.
 - **The newsvendor rule comes back only weakly.** The effective penalties are positive in
-  both directions: +15.9 EUR/MWh per MWh short, +19.4 per MWh long. That gives
-  τ = 19.4 / (15.9 + 19.4) ≈ 0.55, close to the median. Estimated from trailing data, it
-  adds noise and costs 0.45 EUR/MWh.
+  both directions: +15.6 EUR/MWh per MWh short, +19.9 per MWh long. That gives
+  τ = 19.9 / (15.6 + 19.9) ≈ 0.56, close to the median. Estimated from trailing data, it
+  adds noise and costs 0.44 EUR/MWh.
 - **Conclusion:** under DK1 single pricing, bid the median (or the mean, which costs the
   same). A sharper distribution pays off elsewhere, in less system imbalance and in products
   with asymmetric penalties, not in this cost.
@@ -338,10 +344,10 @@ Test year, on the same 8,664 hours as the evaluation above (the full table is in
 
 | Model | CRPS without ENS → with | Change | Diebold–Mariano (p) | 90 % interval coverage |
 |---|---|---|---|---|
-| Raw ensemble vs HRES curve | 0.0421 → 0.0406 | −3.6 % | −2.96 (0.003) | 84 % → 82 % |
-| Quantile regression | 0.0414 → 0.0410 | −0.9 % | −1.36 (0.17) | 84 % → 84 % |
-| Logit-normal | 0.0416 → 0.0416 | 0.0 % | +0.03 (0.98) | 89 % → 88 % |
-| LightGBM | 0.0413 → 0.0407 | −1.5 % | −3.24 (0.001) | 74 % → 76 % |
+| Raw ensemble vs HRES curve | 0.0419 → 0.0406 | −3.2 % | −2.67 (0.008) | 84 % → 82 % |
+| Quantile regression | 0.0411 → 0.0409 | −0.5 % | −0.59 (0.55) | 85 % → 84 % |
+| Logit-normal | 0.0411 → 0.0411 | 0.0 % | −0.14 (0.89) | 90 % → 88 % |
+| LightGBM | 0.0413 → 0.0406 | −1.6 % | −3.09 (0.002) | 74 % → 76 % |
 
 - **The spread carries information.** Binned by the raw ensemble spread, the RMSE of the
   HRES forecast rises steadily, from 2 % to 11 % of capacity
@@ -350,23 +356,60 @@ Test year, on the same 8,664 hours as the evaluation above (the full table is in
   (D-042), the spread looked significant (−1.6 %, p = 0.007), because part of its gain was
   compensating for the broken basis. The logit-normal does not improve: its σ already
   depends on p̂ and k, and one extra term in log σ adds nothing.
-- **The raw ensemble is the best model of the test year** (CRPS 0.0406, skill +67.8 %), and
-  its mean is a better point forecast than HRES: RMSE 8.10 % against 8.18 %. Averaging 51
-  members removes noise that a single run keeps. It is still under-dispersive: its 90 %
+- **The raw ensemble ties for best model of the test year** (CRPS 0.0406, skill +67.8 %,
+  level with LightGBM plus the spread), without any post-processing. Its mean is as good a
+  point forecast as HRES (RMSE 8.08 % against 8.09 %). It is under-dispersive: its 90 %
   interval covers 82 %, and the spread–skill points lie above the diagonal.
 - **Validation disagreed.** On the 90 winter days of validation, the raw ensemble was worse
-  than the curve (0.0370 against 0.0346). The test year contains all seasons and decides
+  than the curve (0.0368 against 0.0346). The test year contains all seasons and decides
   here; that it was not visible beforehand is reported, not tuned for.
 - **Next:** the ensemble mean as the curve's input, or the plan's optional adaptive HRES +
-  ENS-mean combination (a miniature of ENFOR's forecast combination), should lower the point
-  error too. Neither is done yet.
-- **Imbalance cost** (Step 7) is unchanged in kind. The raw ensemble's better point
-  forecast costs more (3.66 against 3.30 EUR/MWh for the median bid), which fits the
-  covariance mechanism.
+  ENS-mean combination (a miniature of ENFOR's forecast combination), may lower the point
+  error. Neither is done yet.
+- **Imbalance cost** (Step 7) is unchanged in kind. The raw ensemble costs more than the
+  logit-normal (3.63 against 3.29 EUR/MWh for the median bid), though its CRPS is better,
+  which fits the covariance mechanism.
 
 ### Thor: adapting to a regime change
 
-_Pending._
+Thor, Denmark's largest offshore wind farm (1,058 MW, 22 km off Thorsminde), joined DK1 in
+2026. The capacity register counts it in full from 2026-03-01, but its output only shows
+from mid-May: DK1 offshore production first exceeds its old maximum by 5 % on 2026-05-15,
+and it reaches ~2,000–2,090 MW from June, against ≤ 1,650 MW before, about half of Thor.
+ECMWF's IFS cycle 50r1 reached our 00 UTC runs on 2026-05-13, two days earlier, so the two
+effects cannot be separated. Because the register runs ahead of production, y = P/C is
+biased low, and everything here is scored in MW: the quantiles times the capacity known at
+issue time, against settled production (`make stress`, [reports/stress.md](reports/stress.md),
+D-044).
+
+| Model | Test year: bias / CRPS (MW) | Stress period: bias / CRPS (MW) |
+|---|---|---|
+| Frozen curve | +5 / 244 | +133 / 263 |
+| Monthly walk-forward refit | +12 / 244 | +127 / 268 |
+| RLS, λ = 1 (no forgetting) | +15 / 241 | +124 / 260 |
+| RLS, λ = 0.9999 (tuned, ~270 days) | +17 / **240** | +102 / 256 |
+| RLS, λ = 0.9995 (~54 days) | +24 / 242 | +65 / **249** |
+| RLS, λ = 0.999 (~27 days) | +22 / 245 | +58 / 256 |
+| RLS, λ = 0.9999, covariance reset at the events | +17 / 240 | +17 / 289 |
+
+- **Forgetting tracks, at a price.** Shorter memories halve the over-forecast after Thor's
+  registration (+124 → +58 MW) but cost accuracy in the stable year. The best λ is 0.9999
+  for the test year and 0.9995 under change: the tracking-versus-variance trade-off of
+  exponential forgetting, which no single λ escapes
+  ([rolling bias and CRPS](reports/stress/rolling.png)).
+- **A full covariance reset over-reacts.** Resetting P to δI at the two known events removes
+  the bias, but forgets the precision of all 64 parameters, and the curve swings
+  ([curve level](reports/stress/curve_level.png)). A partial reset, or one limited to the
+  offshore parameters, is the natural next step; it is not tuned here, because the stress
+  period is the evaluation.
+- **Monthly refits are no faster than λ = 1.** They refit on all data since 2024, so one new
+  month weighs little.
+- **This exposed a defect** (D-043). The first run showed λ = 0.999 as flat as λ = 1. A trace
+  bound on the RLS covariance had, once unobserved directions inflated, shrunk every gain,
+  so forgetting never tracked anything. P is now bounded per direction. Validation then
+  picked λ = 0.9999 over λ = 1, and every RLS-based number in this README was rerun.
+
+![Rolling bias and CRPS through Thor and IFS 50r1](reports/stress/rolling.png)
 
 ## Reproducibility
 
@@ -376,7 +419,7 @@ _Pending._
   [`config.toml`](config.toml). Variant configs inherit from it with `base = "..."` and
   override only what changes (see [`data/sample/smoke.toml`](data/sample/smoke.toml)).
 - **Pipeline:** `make all` regenerates every artefact from raw data; stages are
-  `data → features → backtest → evaluate → market → figures`.
+  `data → features → backtest → evaluate → market → stress → figures`.
 - **CI:** GitHub Actions runs lint (pre-commit: ruff, formatting, lock check), the test suite,
   and a smoke run of the full pipeline on a committed sample, whose outputs are uploaded as
   a build artefact. A change counts as done only when CI is green for the pushed commit:
@@ -390,7 +433,7 @@ _Pending._
 
 ```
 config.toml               dates, points, quantile grid, hyper-parameters
-Makefile                  data | features | backtest | evaluate | market | figures | all | smoke | test
+Makefile                  data | features | backtest | evaluate | market | stress | figures | all | smoke | test
 src/wpforecast/
   config.py               typed, validated config loading
   pipeline.py             pipeline stages
@@ -404,13 +447,14 @@ src/wpforecast/
   scoring.py              CRPS, pinball loss, coverage, MAE, skill
   evaluation.py           test-year report: bootstrap bands, reliability, PIT, Diebold-Mariano
   market.py               DK1 single-price imbalance cost of day-ahead bids
+  stress.py               regime change (Thor, IFS 50r1): adaptivity regimes in MW
   __main__.py             CLI: wpforecast <stage> --config ...
 scripts/                  utilities: CI watcher
 tests/                    unit tests, look-ahead test, end-to-end smoke test
 data/README.md            data dictionary, caveats, licences
 data/sample/              committed slice of real data + smoke config
 data/raw, data/interim    downloaded / derived data (git-ignored)
-reports/                  data check, test-year evaluation and market reports, with figures
+reports/                  data check, evaluation, market and stress reports, with figures
 outputs/, figures/        generated artefacts (git-ignored)
 DECISIONS.md              running decision log
 CLAUDE.md                 project rules for AI-assisted work
@@ -441,6 +485,9 @@ Design choices, with reasons and rejected alternatives, are recorded in
   wind farm operators under a one-price balancing scheme. arXiv:2505.05153.
 - H. Aa. Nielsen (2013). Forecasts of actual imbalance unit costs and simulated 5-minute
   prices for the two Danish Nord Pool price areas.
+- M. E. Salgado, G. C. Goodwin, R. H. Middleton (1988). Modified least squares algorithm
+  incorporating exponential resetting and forgetting. *International Journal of Control*
+  47(2).
 - T. Gneiting, A. E. Raftery, A. H. Westveld, T. Goldman (2005). Calibrated probabilistic
   forecasting using ensemble model output statistics and minimum CRPS estimation.
   *Monthly Weather Review* 133(5).

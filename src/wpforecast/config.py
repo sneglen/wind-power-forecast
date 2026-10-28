@@ -216,6 +216,20 @@ class Market:
 
 
 @dataclass(frozen=True)
+class Event:
+    date: dt.date
+    label: str
+
+
+@dataclass(frozen=True)
+class Stress:
+    plot_start: dt.date
+    rolling_days: int
+    first_output_margin: float
+    events: tuple[Event, ...]
+
+
+@dataclass(frozen=True)
 class Config:
     paths: Paths
     data: Data
@@ -230,6 +244,7 @@ class Config:
     model: Model
     evaluation: Evaluation
     market: Market
+    stress: Stress
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -441,6 +456,16 @@ def _validate(cfg: Config) -> None:
     )
     _check(mk.spike_eur_mwh > 0, "[market] spike_eur_mwh must be > 0")
 
+    st = cfg.stress
+    dates = [e.date for e in st.events]
+    _check(st.rolling_days >= 1, "[stress] rolling_days must be >= 1")
+    _check(st.first_output_margin >= 0, "[stress] first_output_margin must be >= 0")
+    _check(dates == sorted(dates), "[stress] events must be in date order")
+    _check(
+        all(d.stress_start <= x for x in dates) and st.plot_start < d.stress_start,
+        "[stress] events lie in the stress period, plot_start before it",
+    )
+
 
 def load_config(path: str | Path) -> Config:
     """Load, merge (via ``base``) and validate a config file."""
@@ -522,6 +547,12 @@ def load_config(path: str | Path) -> Config:
             intervals=tuple(float(x) for x in _table(raw, "evaluation").get("intervals", [])),
         ),
         market=_build(Market, raw, "market"),
+        stress=_build(
+            Stress,
+            raw,
+            "stress",
+            events=tuple(Event(**e) for e in _table(raw, "stress").get("events", [])),
+        ),
     )
     _validate(cfg)
     return cfg

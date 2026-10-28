@@ -1,10 +1,12 @@
-"""Pipeline stages: data -> features -> backtest -> evaluate -> market -> figures.
+"""Pipeline stages: data -> features -> backtest -> evaluate -> market -> stress -> figures.
 
 ``data`` downloads, builds and checks the inputs (``wpforecast.data``). ``features`` builds
 one row per issue time x target hour from the information set at issue time
 (``wpforecast.features``). ``backtest`` runs every model through the event loop of
 ``wpforecast.backtest``; ``evaluate`` scores them on the same hours (``wpforecast.scoring``);
-``market`` prices their bids in the imbalance market (``wpforecast.market``).
+``market`` prices their bids in the imbalance market (``wpforecast.market``); ``stress``
+follows the adaptivity regimes through a regime change (``wpforecast.stress``). ``data``
+also runs the data check.
 
 Conventions: timestamps are UTC, hour-beginning. Power is capacity-normalised to [0, 1].
 Horizon ``k`` = hours from the issue time to the END of the target hour; the day-ahead
@@ -21,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from wpforecast import backtest, data, evaluation, features, market, scoring
+from wpforecast import backtest, data, evaluation, features, market, scoring, stress
 from wpforecast.backtest import Model
 from wpforecast.config import Config
 from wpforecast.data import checks, ens
@@ -261,6 +263,13 @@ def run_market(cfg: Config) -> Path:
     return market.run(cfg, fc, ("curve_rls", *PROBABILISTIC), BASELINES)
 
 
+def run_stress(cfg: Config) -> Path:
+    """Regime change (Step 9): the adaptivity regimes through Thor and IFS 50r1, in MW."""
+    fc = pd.read_parquet(_require(cfg.paths.outputs / FORECASTS, "Run `make backtest` first."))
+    tuned = json.loads((cfg.paths.outputs / TUNING).read_text())["rls_forgetting"]
+    return stress.run(cfg, fc, features.read(cfg), tuned, speed_path(cfg)[1])
+
+
 def score_table(metrics: dict) -> str:
     """Markdown summary of ``metrics.json``."""
     lines = [
@@ -352,18 +361,10 @@ def _curve(
     cfg: Config, beta: np.ndarray, onshore: np.ndarray, ratio: float, direction: float
 ) -> np.ndarray:
     """The curve along onshore speed v, offshore speed ratio * v, diurnal terms at mean 0."""
-    basis = power_curve(cfg, "figure", 1.0).basis
-    n = len(onshore)
-    phi = basis.matrix(
-        {"onshore": onshore, "offshore": ratio * onshore},
-        {r: np.full(n, direction) for r in REGIONS},
-        np.zeros(n),
-    )
-    phi[:, basis.size - 2 * basis.harmonics :] = 0.0
-    return phi @ beta
+    return power_curve(cfg, "figure", 1.0).basis.along(onshore, ratio, direction) @ beta
 
 
-def _speed_path(cfg: Config) -> tuple[np.ndarray, float]:
+def speed_path(cfg: Config) -> tuple[np.ndarray, float]:
     """Onshore speeds up to the 99.9 % quantile seen, and the median offshore/onshore ratio."""
     on, off = (f"wind_speed_100m@{r}" for r in REGIONS)
     table = pd.read_parquet(cfg.paths.interim / features.FEATURES, columns=[on, off]).dropna()
@@ -374,7 +375,7 @@ def _speed_path(cfg: Config) -> tuple[np.ndarray, float]:
 
 def _curve_figures(cfg: Config, params: pd.DataFrame, out_dir: Path, plt) -> None:
     beta_cols = [c for c in params.columns if c.startswith("b")]
-    speed, ratio = _speed_path(cfg)
+    speed, ratio = speed_path(cfg)
 
     fig, axes = plt.subplots(1, 2, figsize=(9, 3.8), sharey=True)
     for ax, name in zip(axes, ("curve_frozen", "curve_rls"), strict=True):
@@ -419,10 +420,11 @@ STAGES = {
     "backtest": run_backtest,
     "evaluate": run_evaluate,
     "market": run_market,
+    "stress": run_stress,
     "figures": run_figures,
 }
 
 
 def run_all(cfg: Config) -> None:
-    for name in ("data", "features", "backtest", "evaluate", "market", "figures"):  # data checks
+    for name in ("data", "features", "backtest", "evaluate", "market", "stress", "figures"):
         STAGES[name](cfg)

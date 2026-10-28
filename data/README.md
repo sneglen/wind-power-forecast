@@ -56,8 +56,10 @@ Energy per hour (MWh/h) is written as average power (MW).
   was downloaded; that date defines the snapshot.
 - **Capacity.** `CapacityPerMunicipality` counts a wind farm from its registration. Thor
   (municipality code 1) appears with its full 1058.4 MW from March 2026, while its
-  turbines were still being installed (36 of 72 by July 2026), so y = P / C is biased
-  low during the ramp-up. Scores in the stress period are therefore reported in MW.
+  turbines were still being installed (36 of 72 by July 2026): DK1 offshore output first
+  exceeds its earlier maximum (+5 %) on 2026-05-15 and reaches ~2,000–2,090 MW from June.
+  y = P / C is therefore biased low during the ramp-up, and the stress period is scored in
+  MW (D-044).
 - **Energinet's forecast** is published at 18:00 local on D−1, seven hours after our issue
   time, from later NWP. It is a benchmark with an information edge, not a competitor on
   equal terms. It has 217 missing hours, the longest gap 72 h.

@@ -41,7 +41,23 @@ def test_covariance_stays_bounded_without_excitation():
     rls = RLS(3, forgetting=0.95, delta=10.0)
     for _ in range(500):
         rls.update(np.array([1.0, 0.0, 0.0]), 0.5)  # only the first direction is excited
-    assert np.trace(rls.P) <= rls.max_trace + 1e-9
+        rls.bound()
+    assert np.linalg.eigvalsh(rls.P).max() <= rls.delta + 1e-9
+
+
+def test_bound_keeps_tracking_where_there_is_data():
+    """The second direction is never excited. Bounding P per direction keeps the first one's
+    gain, so it tracks a change; scaling all of P to a trace bound stopped it (D-043)."""
+    rng = np.random.default_rng(2)
+    x = rng.normal(size=4000)
+    beta = np.where(np.arange(4000) < 2000, 1.0, 2.0)
+    rls = RLS(2, forgetting=0.99, delta=10.0)
+    for i in range(4000):
+        rls.update(np.array([x[i], 0.0]), beta[i] * x[i])
+        if i % 20 == 19:  # at the end of each batch of 20 rows, as the curve does daily
+            rls.bound()
+    assert abs(rls.beta[0] - 2.0) < 0.01
+    assert np.linalg.eigvalsh(rls.P).max() <= rls.delta + 1e-9
 
 
 def test_basis_is_a_partition_of_unity():

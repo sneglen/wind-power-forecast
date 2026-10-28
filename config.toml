@@ -135,7 +135,7 @@ min_error_samples = 30        # error quantiles at horizon k need this many past
 # rows, ~37 rows per day. The value is chosen on the validation period from this grid
 # (RMSE of the point forecast); 1.0 is the frozen / walk-forward twin.
 forgetting_grid = [0.999, 0.9995, 0.9998, 0.9999, 1.0]
-delta = 100.0                 # regularised start P0 = delta * I; trace(P) bounded by trace(P0)
+delta = 100.0                 # regularised start P0 = delta * I; P <= delta * I per direction
 spline_knots = 6              # interior knots of the cubic B-spline in 100 m wind speed
 spline_degree = 3
 # Knots spread uniformly over [0, speed_max] per region; faster is clamped. Regional means
@@ -202,3 +202,17 @@ tau_lookback_days = 60        # walk-forward choice of the bid quantile
 tau_min_days = 14             # fewer trailing days than this: bid the median
 reference_model = "logitnormal"  # the model behind the position analysis and the tau figure
 spike_eur_mwh = 1000.0        # |DA - imbalance price| above this: a scarcity hour, shown apart
+
+[stress]
+# Step 9: Thor's ramp-up and ECMWF's cycle change, scored in MW. The capacity register counts
+# Thor in full from 2026-03-01, but its output only shows from mid-May 2026, so y = P / C is
+# biased low in between. Events are dated in advance (register update, ECMWF announcement):
+# the `rls_reset` variant resets its covariance P to delta I when the first row on or after
+# an event date is learned.
+plot_start = 2025-12-01       # rolling plots start here, to show the stable months before
+rolling_days = 14             # trailing window of the rolling bias and CRPS
+first_output_margin = 0.05    # new offshore output "shows" above the old maximum x (1 + this)
+events = [
+    { date = 2026-03-01, label = "Thor registered (+1,058 MW)" },
+    { date = 2026-05-13, label = "IFS 50r1 (first 00 UTC run)" },
+]

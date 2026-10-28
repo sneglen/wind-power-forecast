@@ -9,7 +9,7 @@ Point forecast for horizon k, issued at t with the last known hour p_t:
   hour. One curve is pooled over all horizons.
 - ``beta`` is estimated by recursive least squares with exponential forgetting factor
   lambda (memory ~ 1 / (1 - lambda) rows), a regularised start P0 = delta I and a covariance
-  whose trace is bounded by that of P0. With lambda = 1 it equals ridge regression with
+  bounded by P0 per direction (P <= delta I). With lambda = 1 it equals ridge regression with
   penalty 1 / delta, i.e. OLS for a large delta: that is the frozen and walk-forward twin.
 - ``a_k`` corrects the curve's error at the last known hour; it is estimated per horizon
   block from prequential residuals, with the same forgetting, so it fades with k.
@@ -17,6 +17,9 @@ Point forecast for horizon k, issued at t with the last known hour p_t:
 The predictive distribution is the point plus empirical quantiles of the model's own
 prequential errors at the same horizon over the last ``error_window_days`` (Step 5 replaces
 this with proper probabilistic models).
+
+With ``resets`` (Step 9), the covariance P returns to delta I at known events (covariance
+resetting), so beta re-learns quickly after a regime change while keeping lambda = 1.
 
 With ENS inputs (Step 8), ``members`` passes every ensemble member through the same curve
 and correction, and a curve built with ``ensemble=True`` also keeps the prequential spread
@@ -101,6 +104,18 @@ class Basis:
             hour_of_day(rows, at_issue),
         )
 
+    def along(self, onshore: np.ndarray, ratio: float, direction: float) -> np.ndarray:
+        """phi along onshore speed v and offshore speed ratio * v from one direction, with
+        the diurnal terms at their mean (zero): for figures of the curve."""
+        n = len(onshore)
+        phi = self.matrix(
+            {"onshore": onshore, "offshore": ratio * onshore},
+            {r: np.full(n, direction) for r in REGIONS},
+            np.zeros(n),
+        )
+        phi[:, self.size - 2 * self.harmonics :] = 0.0
+        return phi
+
     def members(self, rows: pd.DataFrame, members: list[int]) -> np.ndarray:
         """phi of every ENS member at the target hours, shape (rows x members, size)."""
 
@@ -128,7 +143,6 @@ class RLS:
         self.forgetting, self.delta = forgetting, delta
         self.beta = np.zeros(size)
         self.P = delta * np.eye(size)
-        self.max_trace = delta * size
 
     def update(self, x: np.ndarray, y: float) -> None:
         px = self.P @ x
@@ -136,9 +150,18 @@ class RLS:
         self.beta += gain * (y - x @ self.beta)
         self.P = (self.P - np.outer(gain, px)) / self.forgetting
         self.P = (self.P + self.P.T) / 2
-        trace = np.trace(self.P)
-        if trace > self.max_trace:  # no excitation: stop the covariance from winding up
-            self.P *= self.max_trace / trace
+
+    def bound(self) -> None:
+        """P <= delta I per direction (Salgado, Goodwin & Middleton, 1988).
+
+        With forgetting, directions without excitation (rare speed x direction cells) inflate
+        by 1 / lambda per row. Clipping P's eigenvalues at delta returns them to the prior's
+        uncertainty and leaves the well-observed directions, and their gain, untouched.
+        Scaling all of P down to a trace bound instead (the first version, D-043) also shrank
+        the observed directions and stopped forgetting from tracking anything."""
+        w, v = np.linalg.eigh(self.P)
+        if w[-1] > self.delta:
+            self.P = (v * np.minimum(w, self.delta)) @ v.T
 
 
 def ridge(X: np.ndarray, y: np.ndarray, delta: float) -> np.ndarray:
@@ -157,9 +180,11 @@ class PowerCurve:
         levels: tuple[float, ...],
         min_error_samples: int,
         ensemble: bool = False,
+        resets: tuple[pd.Timestamp, ...] = (),
     ) -> None:
         self.name = name
         self.ensemble = ensemble
+        self.resets = tuple(sorted(resets))
         self.params = params
         self.forgetting = forgetting
         self.levels = np.asarray(levels)
@@ -178,6 +203,7 @@ class PowerCurve:
         self.prequential = pd.Series(dtype=float)  # point forecast per released row (by index)
         self.prequential_spread = pd.Series(dtype=float)  # spread of ENS member powers
         self.history: list[tuple[pd.Timestamp, np.ndarray]] = []
+        self.pending = list(self.resets)  # known events still to come
 
     # --- forecast -------------------------------------------------------------------------
 
@@ -289,6 +315,12 @@ class PowerCurve:
             self.sxx[b] = decay * self.sxx[b] + np.sum(issue_error[sel] ** 2)
             self.sxy[b] = decay * self.sxy[b] + np.sum(issue_error[sel] * residual[sel])
 
+        while self.pending and new["time_utc"].max() >= self.pending[0]:
+            # A known regime change: keep beta as the prior mean, forget its precision, so
+            # the rows from here on move beta as if the estimation had just started.
+            self.rls.P = self.rls.delta * np.eye(len(self.rls.beta))
+            self.pending.pop(0)
         for x, target in zip(phi[ok], y[ok], strict=True):
             self.rls.update(x, target)
+        self.rls.bound()  # once per release: within a day, 1 / lambda^rows is ~ 1
         self.history.append((new["time_utc"].max(), self.rls.beta.copy()))
