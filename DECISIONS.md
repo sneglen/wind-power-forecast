@@ -291,3 +291,50 @@ empirical error quantiles (by k, last 90 days) use residuals computed with the p
 they were before those hours were observed.
 **Why:** the plan's formula; prequential residuals keep the correction and the interim
 predictive distribution out-of-sample. Step 5 replaces the error quantiles.
+
+### D-030 · 2026-10-27 · Probabilistic layers on the RLS curve, trained on issued p̂
+**Decision:** `models/probabilistic.py` wraps a power curve (the tuned λ, updated daily) in
+three predictive distributions of y given p̂ and k:
+- **quantile regression** on [B(p̂), B(p̂)·k/38], refit weekly on 180 days (statsmodels);
+- **generalised logit-normal**, with μ linear in z(p̂) and k and log σ linear in z(p̂),
+  z(p̂)² and k, fitted by maximum likelihood with y ≤ ε and y ≥ 1 − ε as censored
+  observations, refit monthly on all known data;
+- **LightGBM quantiles** on p̂, k, calendar terms and ten NWP features, refit monthly.
+
+A layer learns from (p̂, k, y) pairs in which p̂ is the forecast as issued, or the curve's
+prequential point for hours before the first forecast. It forecasts only once it has
+`min_train_rows` pairs.
+**Why:** the plan's three complementary distributions (nonparametric, parametric,
+machine-learned). Training on issued p̂ keeps the distribution honest about the point
+model's real errors.
+**Deviation:** LightGBM refuses monotone constraints with its quantile objective, so the
+plan's monotonicity in wind speed is not imposed; p̂ itself is monotone in speed.
+**Deferred:** the recursive-likelihood logit-normal (Pierrot & Pinson) and the beta check,
+both optional in the plan.
+**Evidence:** on the HRES data downloaded by 2026-10-27 (test 2025-03-01 to 06-08), all three
+layers lower CRPS slightly against the curve's own error quantiles (0.0401 → 0.0388–0.0393).
+LightGBM is the sharpest but too narrow in the tails (5 % / 95 % quantiles cover 14 % / 89 %).
+LightGBM is pinned to `num_threads = 4`: with all 16 cores its OpenMP threads spin-wait when
+another process shares the CPU (114 s instead of 2 s on the smoke sample).
+
+### D-031 · 2026-10-27 · Quantile models fitted at 23 levels, interpolated to 99
+**Decision:** quantile regression and LightGBM are fitted at the 19 reporting levels plus
+`tail_levels` (0.01, 0.02, 0.98, 0.99), sorted, and interpolated linearly in τ onto the
+99-level CRPS grid; the logit-normal is evaluated at the same levels for consistency. The
+tail levels must include the grid's ends, so nothing is extrapolated.
+**Why:** 99 quantile regressions per weekly refit would take ~20 min on the full data
+(87 ms each); 23 take ~5 min. Between neighbouring levels the quantile function is close to
+linear, and CRPS is insensitive to that interpolation.
+**Rejected:** scipy's HiGHS LP for quantile regression (16× slower than statsmodels here).
+
+### D-032 · 2026-10-28 · Wait for the rolling daily budget instead of stopping
+**Decision:** when Open-Meteo's daily budget is spent, the downloader computes when enough
+calls leave the rolling 24 h window. If that is within `max_wait_min` (60), it waits;
+otherwise it stops and names that time.
+**Why:** the session of 2026-10-28 stopped at 08:09, one minute after the first of the
+previous morning's calls expired. The message named that minute, but those calls expire
+over 40 minutes. Waiting lets a session started at the named time run to the end.
+**Evidence:** the archive lacks the 00 UTC runs of 2025-08-05, 08-06, 08-08 and 08-09
+(Open-Meteo: "The requested model run is not available"). They are recorded as missing.
+Target days 2025-08-07 and 08-10 have no usable run and are not forecast; 08-06 and 08-09
+use the previous run.

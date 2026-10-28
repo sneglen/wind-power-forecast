@@ -26,6 +26,7 @@ from wpforecast.config import Config
 from wpforecast.data import checks, ens
 from wpforecast.models.baselines import Climatology, NewReference, Persistence
 from wpforecast.models.power_curve import REGIONS, PowerCurve
+from wpforecast.models.probabilistic import GradientBoosting, LogitNormal, QuantileRegression
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,8 @@ RELIABILITY = "reliability.png"
 SKILL_BY_HORIZON = "crps_skill_by_horizon.png"
 CURVE_BY_SECTOR = "power_curve_by_sector.png"
 CURVE_TRAJECTORY = "power_curve_trajectory.png"
+FAN_CHART = "fan_chart_stormy_week.png"
+PROBABILISTIC = ("quantreg", "logitnormal", "lightgbm")
 REFERENCE = "climatology"
 
 
@@ -102,8 +105,11 @@ def tune_forgetting(cfg: Config, table: pd.DataFrame) -> tuple[float, dict[str, 
 def models(cfg: Config, forgetting: float) -> list[tuple[Model, str, dt.date]]:
     """Every model in the backtest, with its adaptivity regime and first target day."""
     levels = scoring.crps_levels(cfg)
-    n = cfg.model.baselines.min_error_samples
+    m = cfg.model
+    n = m.baselines.min_error_samples
     first = cfg.dates.train_start
+    layer = (scoring.fit_levels(cfg), levels, m.probabilistic.min_train_rows)
+    k_max = cfg.issue.max_horizon_h
     return [
         (Climatology(levels), "walk_forward", first),
         (Persistence(levels, n), "walk_forward", first),
@@ -111,6 +117,30 @@ def models(cfg: Config, forgetting: float) -> list[tuple[Model, str, dt.date]]:
         (power_curve(cfg, "curve_frozen", 1.0), "frozen", cfg.dates.test_start),
         (power_curve(cfg, "curve_walk_forward", 1.0), "walk_forward", first),
         (power_curve(cfg, "curve_rls", forgetting), "recursive", first),
+        # Step 5: distributions on the RLS curve; each layer keeps its own refit schedule.
+        (
+            QuantileRegression(
+                "quantreg", power_curve(cfg, "quantreg", forgetting), *layer, m.quantreg, k_max
+            ),
+            "recursive",
+            first,
+        ),
+        (
+            LogitNormal(
+                "logitnormal",
+                power_curve(cfg, "logitnormal", forgetting),
+                *layer,
+                m.logitnormal,
+                k_max,
+            ),
+            "recursive",
+            first,
+        ),
+        (
+            GradientBoosting("lightgbm", power_curve(cfg, "lightgbm", forgetting), *layer, m.gbm),
+            "recursive",
+            first,
+        ),
     ]
 
 
@@ -262,8 +292,50 @@ def run_figures(cfg: Config) -> Path:
     params = cfg.paths.outputs / CURVE_PARAMS
     if params.exists():
         _curve_figures(cfg, pd.read_parquet(params), out_dir, plt)
+    _fan_chart(cfg, pd.read_parquet(cfg.paths.outputs / FORECASTS), out_dir, plt)
     log.info("figures: -> %s", out_dir)
     return out_dir
+
+
+def stormiest_week(fc: pd.DataFrame) -> list:
+    """The seven consecutive test days with the highest mean observed y (product hours)."""
+    test = fc[(fc["period"] == "test") & fc["in_product"]].drop_duplicates("time_utc")
+    daily = test.groupby("target_day")["y"].mean()
+    if len(daily) < 7:
+        return list(daily.index)
+    end = daily.rolling(7).mean().idxmax()
+    position = list(daily.index).index(end)
+    return list(daily.index[position - 6 : position + 1])
+
+
+def _fan_chart(cfg: Config, fc: pd.DataFrame, out_dir: Path, plt) -> None:
+    names = [n for n in PROBABILISTIC if n in set(fc["model"])]
+    if not names:
+        return
+    week = stormiest_week(fc)
+    rows = fc[fc["target_day"].isin(week) & fc["in_product"]]
+    fig, axes = plt.subplots(len(names), 1, figsize=(9, 2.4 * len(names)), sharex=True)
+    for ax, name in zip(np.atleast_1d(axes), names, strict=True):
+        f = rows[rows["model"] == name].sort_values("time_utc")
+        t = f["time_utc"]
+        for lo, hi, alpha in ((0.05, 0.95, 0.25), (0.25, 0.75, 0.45)):
+            ax.fill_between(
+                t,
+                f[scoring.qcol(lo)],
+                f[scoring.qcol(hi)],
+                color="C0",
+                alpha=alpha,
+                lw=0,
+                label=f"{lo:.0%}–{hi:.0%}",
+            )
+        ax.plot(t, f[scoring.qcol(0.5)], color="C0", lw=1, label="median")
+        ax.plot(t, f["y"], color="k", lw=0.8, label="observed")
+        ax.set(ylim=(0, 1), ylabel="y = P / C", title=name)
+    np.atleast_1d(axes)[0].legend(loc="upper right", fontsize=7, ncol=4, frameon=False)
+    fig.suptitle(f"Day-ahead forecasts, stormiest test week from {week[0]}")
+    fig.tight_layout()
+    fig.savefig(out_dir / FAN_CHART, dpi=150)
+    plt.close(fig)
 
 
 SECTORS = np.arange(0, 360, 45)

@@ -157,6 +157,15 @@ def test_budget_waits_for_hour_and_stops_for_day(tmp_path, monkeypatch):
     reloaded = openmeteo.Budget(tmp_path / "ledger.json", 40, 60, now=lambda: clock[0])
     assert len(reloaded.entries) == 3
 
+    # With a long enough max_wait, the rolling day frees up instead of stopping the download.
+    patient = openmeteo.Budget(
+        tmp_path / "ledger.json", 40, 60, now=lambda: clock[0], max_wait_s=2 * 86400
+    )
+    before = clock[0]
+    patient.acquire(19)
+    assert clock[0] - before > 80000  # waited until the first entries left the 24 h window
+    assert patient._used(openmeteo.DAY) <= 60
+
 
 def _location(run: pd.Timestamp, hours: int, variables) -> dict:
     times = pd.date_range(run, periods=hours, freq="h")

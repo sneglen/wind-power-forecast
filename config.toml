@@ -25,6 +25,7 @@ calls_per_hour = 4500         # free tier: 5000 / hour, 10000 / day
 calls_per_day = 9800         # 200 below the limit; the ledger is shared by all configs
 calls_per_location = 1.0      # conservative: each location in a request counts as a call
 min_interval_s = 1.0
+max_wait_min = 60.0           # wait this long for the rolling daily budget to free up, else stop
 
 [dates]
 # Target days (local). The last 3 months of training are the validation set.
@@ -115,6 +116,8 @@ levels = [
     0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95,
 ]
 crps_levels = 99              # CRPS approximated from tau = 0.01 .. 0.99
+# Step 5 models are fitted at levels + tail_levels and interpolated in tau to the CRPS grid.
+tail_levels = [0.01, 0.02, 0.98, 0.99]
 
 [adaptivity]
 regimes = ["frozen", "walk_forward", "recursive"]
@@ -139,20 +142,36 @@ diurnal_harmonics = 2         # sin/cos of 2 pi m h / 24, m = 1..2 (UTC hour)
 horizon_blocks = [1, 7, 13, 19, 25, 31]  # first k of each block of the correction a_k
 error_window_days = 90        # past errors used for the empirical predictive quantiles
 
+[model.probabilistic]
+# Step 5: predictive distributions on top of the RLS power curve's point forecast p.
+min_train_rows = 200          # a layer forecasts only once it has this many training rows
+
 [model.quantreg]
+# Adaptive quantile regression: q_tau = [B(p), B(p) k / max_horizon_h]' gamma_tau.
 window_days = 180             # rolling window
 refit_days = 7                # weekly refit
-spline_knots = 5              # placeholder
+spline_knots = 5              # interior knots of the B-spline in p over [0, 1]
+spline_degree = 3
 
 [model.logitnormal]
-nu = 1.0                      # placeholder: generalised-logit shape
-epsilon = 0.001               # clip normalised power to [eps, 1 - eps] before transform
-forgetting = 0.995            # placeholder: recursive-likelihood variant (optional)
+# Generalised logit-normal: z = log(y^nu / (1 - y^nu)) ~ N(mu, sigma^2), censored at
+# [epsilon, 1 - epsilon]; mu and log sigma linear in z(p), z(p)^2 and k. Refit monthly.
+nu = 1.0
+epsilon = 0.001               # y <= epsilon (>= 1 - epsilon) counts as at the bound
 
 [model.gbm]
-learning_rate = 0.05          # placeholder
-num_leaves = 31               # placeholder
-n_estimators = 500            # placeholder
+# LightGBM quantile regression, one model per fitted level, refit monthly on all known data.
+learning_rate = 0.05
+num_leaves = 15
+n_estimators = 300
+min_child_samples = 50
+num_threads = 4               # more threads spin-wait when other processes share the CPU
+features = [
+    "wind_speed_100m@onshore", "wind_speed_100m@offshore",
+    "u_100m@onshore", "v_100m@onshore", "u_100m@offshore", "v_100m@offshore",
+    "wind_speed_10m@onshore", "wind_gusts_10m@onshore", "temperature_2m@onshore",
+    "surface_pressure@onshore",
+]
 
 [evaluation]
 bootstrap_block_days = 1      # day-block bootstrap for consistency bands

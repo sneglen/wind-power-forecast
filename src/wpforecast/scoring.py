@@ -21,6 +21,19 @@ def crps_levels(cfg: Config) -> tuple[float, ...]:
     return tuple(i / n for i in range(1, n))
 
 
+def fit_levels(cfg: Config) -> tuple[float, ...]:
+    """Levels the Step 5 models are fitted at: reporting levels plus tails (CRPS grid ends)."""
+    return tuple(sorted(set(cfg.quantiles.levels) | set(cfg.quantiles.tail_levels)))
+
+
+def to_grid(q: np.ndarray, levels: np.ndarray, grid: np.ndarray) -> np.ndarray:
+    """Interpolate sorted quantiles at ``levels`` linearly in tau onto ``grid``, row by row."""
+    q = np.sort(q, axis=1)
+    i = np.clip(np.searchsorted(levels, grid, side="right") - 1, 0, len(levels) - 2)
+    w = (grid - levels[i]) / (levels[i + 1] - levels[i])
+    return q[:, i] + w * (q[:, i + 1] - q[:, i])
+
+
 def qcol(level: float) -> str:
     """Column name holding the forecast of quantile ``level``."""
     return f"q{round(level, 6):g}"

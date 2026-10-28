@@ -149,6 +149,7 @@ class PowerCurve:
         self.sxx = np.zeros(len(self.blocks))
         self.sxy = np.zeros(len(self.blocks))
         self.errors = pd.DataFrame(columns=["time_utc", "horizon_h", "error"])
+        self.prequential = pd.Series(dtype=float)  # point forecast per released row (by index)
         self.history: list[tuple[pd.Timestamp, np.ndarray]] = []
 
     # --- forecast -------------------------------------------------------------------------
@@ -231,6 +232,7 @@ class PowerCurve:
             ],
             ignore_index=True,
         )
+        self.prequential = pd.concat([self.prequential, pd.Series(point[ok], new.index[ok])])
         residual = y - curve
         for b in np.unique(block[ok]):
             sel = ok & (block == b)

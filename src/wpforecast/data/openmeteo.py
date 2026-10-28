@@ -50,25 +50,42 @@ class Budget:
         per_hour: float,
         per_day: float,
         now: Callable[[], float] = time.time,
+        max_wait_s: float = 0.0,
     ) -> None:
         self.path, self.per_hour, self.per_day, self.now = path, per_hour, per_day, now
+        self.max_wait_s = max_wait_s
         self.entries: list[list[float]] = json.loads(path.read_text()) if path.exists() else []
 
     def _used(self, window_s: float) -> float:
         cutoff = self.now() - window_s
         return sum(w for t, w in self.entries if t > cutoff)
 
+    def _free_at(self, window_s: float, limit: float, weight: float) -> float:
+        """Earliest time at which ``weight`` more calls fit in the rolling window."""
+        live = sorted(e for e in self.entries if e[0] > self.now() - window_s)
+        excess = sum(w for _, w in live) + weight - limit
+        for t, w in live:
+            excess -= w
+            if excess <= 0:
+                return t + window_s + 1.0
+        return self.now()
+
     def acquire(self, weight: float) -> None:
         self.entries = [e for e in self.entries if e[0] > self.now() - DAY]
-        if self._used(DAY) + weight > self.per_day:
-            resume = dt.datetime.fromtimestamp(self.entries[0][0] + DAY, dt.UTC)
-            raise BudgetExhausted(
-                f"Open-Meteo daily budget ({self.per_day:g} calls) reached; "
-                f"run `make data` again after {resume:%Y-%m-%d %H:%M} UTC to continue."
+        while self._used(DAY) + weight > self.per_day:
+            free_at = self._free_at(DAY, self.per_day, weight)
+            if free_at - self.now() > self.max_wait_s:
+                resume = dt.datetime.fromtimestamp(free_at, dt.UTC)
+                raise BudgetExhausted(
+                    f"Open-Meteo daily budget ({self.per_day:g} calls) reached; "
+                    f"run `make data` again after {resume:%Y-%m-%d %H:%M} UTC to continue."
+                )
+            log.info(
+                "openmeteo: daily budget frees up in %.0f min, waiting", (free_at - self.now()) / 60
             )
+            http.SLEEP(free_at - self.now())
         while self._used(HOUR) + weight > self.per_hour:
-            oldest = min(t for t, _ in self.entries if t > self.now() - HOUR)
-            wait_s = oldest + HOUR - self.now() + 1.0
+            wait_s = self._free_at(HOUR, self.per_hour, weight) - self.now()
             log.info("openmeteo: hourly budget reached, waiting %.0f min", wait_s / 60)
             http.SLEEP(wait_s)
         self.entries.append([self.now(), weight])
@@ -165,7 +182,9 @@ def download(cfg: Config, client: httpx.Client | None = None) -> None:
         raise FileNotFoundError(f"offline mode, but {len(missing)} Open-Meteo runs are missing")
 
     om = cfg.data.openmeteo
-    budget = Budget(ledger_path(), om.calls_per_hour, om.calls_per_day)
+    budget = Budget(
+        ledger_path(), om.calls_per_hour, om.calls_per_day, max_wait_s=60 * om.max_wait_min
+    )
     throttle = http.Throttle(om.min_interval_s)
     log.info("openmeteo: %d runs to download", len(missing))
     with client or http.client() as session:

@@ -6,9 +6,9 @@ Day-ahead forecasts of DK1 wind power as calibrated, self-adapting predictive di
 (recursive least squares, time-adaptive quantile regression, bounded distributions), and what
 that uncertainty is worth in the DK1 single-price imbalance market. Data: 2024–2026.
 
-> **Status:** Step 4 — adaptive power curve (RLS). The pipeline runs end to end on real DK1
-> data with three references and frozen, walk-forward and recursive power curves;
-> probabilistic models follow.
+> **Status:** Step 5 — probabilistic layer. The pipeline runs end to end on real DK1 data
+> with three references, frozen, walk-forward and recursive power curves, and three
+> predictive distributions; the full evaluation follows.
 
 Developed with AI assistance (Claude Code); modelling choices and their reasons are mine and
 recorded in [DECISIONS.md](DECISIONS.md).
@@ -153,11 +153,35 @@ _Results on the full data: pending the download (Step 1)._
 
 ### Time-adaptive quantile regression
 
-_Pending._
+Wind power uncertainty is heteroscedastic and bounded. It is small when the curve says calm
+or full output, and largest on the steep part of the curve. Following Nielsen et al. (2006),
+every quantile is a linear function of a B-spline basis in the point forecast p̂, with a
+horizon interaction:
+
+q_τ(p̂, k) = [B(p̂), B(p̂)·k/38]ᵀ γ_τ
+
+γ_τ is re-estimated weekly by linear quantile regression on the last 180 days. This is a
+pragmatic stand-in for the fully recursive time-adaptive quantile regression of Møller et al.
+(2008). The model is fitted at 23 levels (the 19 reporting levels plus 0.01, 0.02, 0.98 and
+0.99) and interpolated in τ to the 99-level CRPS grid. Quantile crossing is fixed by sorting.
 
 ### Bounded predictive distributions
 
-_Pending._
+Pinson (2012) maps y ∈ (0, 1) through the generalised logit z = log(y^ν / (1 − y^ν)) and
+lets z be normal. Here μ is linear in z(p̂) and k, and log σ is linear in z(p̂), z(p̂)² and k.
+The parameters are fitted by maximum likelihood, refit monthly, and hours at the bounds
+(y ≤ ε or y ≥ 1 − ε) enter as censored observations. The quantiles are therefore bounded by
+construction and put probability mass at 0 and 1, instead of spilling outside [0, 1] as a
+Gaussian on y would.
+
+A gradient-boosted model completes the set: LightGBM quantile regression on p̂, k, calendar
+terms and the NWP features, refit monthly. It is a flexible, machine-learned check on the
+two structured models.
+
+All three distributions learn from pairs (p̂, y) in which p̂ is the forecast as it was
+issued, so they describe the point model's real out-of-sample errors.
+
+_Results on the full data: pending the download (Step 1)._
 
 ## Evaluation
 
@@ -207,7 +231,8 @@ src/wpforecast/
   features.py             issue times, horizons, periods; the issue-time feature table
   backtest.py             event loop: observe -> fit/update -> predict
   models/                 baselines.py (climatology, persistence, new reference),
-                          power_curve.py (B-spline curve, RLS with forgetting)
+                          power_curve.py (B-spline curve, RLS with forgetting),
+                          probabilistic.py (quantile regression, logit-normal, LightGBM)
   scoring.py              CRPS, pinball loss, coverage, MAE, skill
   __main__.py             CLI: wpforecast <stage> --config ...
 scripts/                  utilities: CI watcher
@@ -232,6 +257,8 @@ Design choices, with reasons and rejected alternatives, are recorded in
   wind power forecasting. *Wind Energy* 1(1).
 - H. A. Nielsen, H. Madsen, T. S. Nielsen (2006). Using quantile regression to extend an
   existing wind power forecasting system with probabilistic forecasts. *Wind Energy* 9(1–2).
+- G. Ke et al. (2017). LightGBM: a highly efficient gradient boosting decision tree.
+  *NeurIPS* 30.
 - J. K. Møller, H. A. Nielsen, H. Madsen (2008). Time-adaptive quantile regression.
   *Computational Statistics & Data Analysis* 52(3).
 - P. Pinson (2012). Very-short-term probabilistic forecasting of wind power with

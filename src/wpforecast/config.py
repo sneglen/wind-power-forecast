@@ -39,6 +39,7 @@ class OpenMeteo:
     calls_per_day: float
     calls_per_location: float
     min_interval_s: float
+    max_wait_min: float
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,7 @@ class Curtailment:
 class Quantiles:
     levels: tuple[float, ...]
     crps_levels: int
+    tail_levels: tuple[float, ...]
 
 
 @dataclass(frozen=True)
@@ -146,17 +148,22 @@ class RLS:
 
 
 @dataclass(frozen=True)
+class Probabilistic:
+    min_train_rows: int
+
+
+@dataclass(frozen=True)
 class QuantReg:
     window_days: int
     refit_days: int
     spline_knots: int
+    spline_degree: int
 
 
 @dataclass(frozen=True)
 class LogitNormal:
     nu: float
     epsilon: float
-    forgetting: float
 
 
 @dataclass(frozen=True)
@@ -164,12 +171,16 @@ class GBM:
     learning_rate: float
     num_leaves: int
     n_estimators: int
+    min_child_samples: int
+    num_threads: int
+    features: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class Model:
     baselines: Baselines
     rls: RLS
+    probabilistic: Probabilistic
     quantreg: QuantReg
     logitnormal: LogitNormal
     gbm: GBM
@@ -339,9 +350,17 @@ def _validate(cfg: Config) -> None:
     _check(all(a < b for a, b in zip(q, q[1:], strict=False)), "[quantiles] must be increasing")
     n = cfg.quantiles.crps_levels + 1
     _check(cfg.quantiles.crps_levels >= 2, "[quantiles] crps_levels must be >= 2")
+    tails = cfg.quantiles.tail_levels
     _check(
-        all(abs(x * n - round(x * n)) < 1e-9 for x in q),
-        "[quantiles] levels must lie on the CRPS grid 1/n .. (n-1)/n, n = crps_levels + 1",
+        all(abs(x * n - round(x * n)) < 1e-9 and 0 < x < 1 for x in q + tails),
+        "[quantiles] levels and tail_levels must lie on the CRPS grid 1/n .. (n-1)/n,"
+        " n = crps_levels + 1",
+    )
+    grid = (1 / n, (n - 1) / n)
+    fitted = sorted(set(q) | set(tails))
+    _check(
+        abs(fitted[0] - grid[0]) < 1e-9 and abs(fitted[-1] - grid[1]) < 1e-9,
+        "[quantiles] tail_levels must include the ends of the CRPS grid (no extrapolation)",
     )
 
     _check(
@@ -352,10 +371,7 @@ def _validate(cfg: Config) -> None:
     _check(m.baselines.min_error_samples >= 1, "[model.baselines] min_error_samples must be >= 1")
     rls = m.rls
     _check(len(rls.forgetting_grid) > 0, "[model.rls] forgetting_grid must not be empty")
-    for name, lam in [("rls", x) for x in rls.forgetting_grid] + [
-        ("logitnormal", m.logitnormal.forgetting)
-    ]:
-        _check(0 < lam <= 1, f"[model.{name}] forgetting must be in (0, 1]")
+    _check(all(0 < x <= 1 for x in rls.forgetting_grid), "[model.rls] forgetting in (0, 1]")
     _check(rls.delta > 0, "[model.rls] delta must be > 0")
     _check(rls.spline_knots >= 1 and rls.spline_degree >= 1, "[model.rls] spline too small")
     _check(
@@ -371,7 +387,10 @@ def _validate(cfg: Config) -> None:
         "[model.rls] horizon_blocks must start at 1 and increase",
     )
     _check(rls.error_window_days >= 1, "[model.rls] error_window_days must be >= 1")
+    _check(m.probabilistic.min_train_rows >= 1, "[model.probabilistic] min_train_rows >= 1")
     _check(m.quantreg.refit_days <= m.quantreg.window_days, "[model.quantreg] refit > window")
+    _check(m.quantreg.spline_knots >= 1, "[model.quantreg] spline_knots must be >= 1")
+    _check(len(m.gbm.features) > 0, "[model.gbm] features must not be empty")
     _check(m.logitnormal.nu > 0, "[model.logitnormal] nu must be > 0")
     _check(0 < m.logitnormal.epsilon < 0.5, "[model.logitnormal] epsilon must be in (0, 0.5)")
 
@@ -427,6 +446,7 @@ def load_config(path: str | Path) -> Config:
             raw,
             "quantiles",
             levels=tuple(float(x) for x in _table(raw, "quantiles").get("levels", [])),
+            tail_levels=tuple(float(x) for x in _table(raw, "quantiles").get("tail_levels", [])),
         ),
         adaptivity=_build(
             Adaptivity,
@@ -446,9 +466,15 @@ def load_config(path: str | Path) -> Config:
                 },
                 horizon_blocks=tuple(_table(raw, "model.rls").get("horizon_blocks", [])),
             ),
+            probabilistic=_build(Probabilistic, raw, "model.probabilistic"),
             quantreg=_build(QuantReg, raw, "model.quantreg"),
             logitnormal=_build(LogitNormal, raw, "model.logitnormal"),
-            gbm=_build(GBM, raw, "model.gbm"),
+            gbm=_build(
+                GBM,
+                raw,
+                "model.gbm",
+                features=tuple(_table(raw, "model.gbm").get("features", [])),
+            ),
         ),
         evaluation=_build(Evaluation, raw, "evaluation"),
         market=_build(Market, raw, "market"),

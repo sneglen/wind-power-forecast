@@ -35,6 +35,7 @@ def test_pipeline_end_to_end(cfg):
         "curve_frozen",
         "curve_walk_forward",
         "curve_rls",
+        *pipeline.PROBABILISTIC,
     }
     assert fc.loc[fc["model"] == "curve_frozen", "period"].isin(["test", "stress"]).all()
     tuning = json.loads((cfg.paths.outputs / pipeline.TUNING).read_text())
@@ -52,6 +53,7 @@ def test_pipeline_end_to_end(cfg):
         pipeline.SKILL_BY_HORIZON,
         pipeline.CURVE_BY_SECTOR,
         pipeline.CURVE_TRAJECTORY,
+        pipeline.FAN_CHART,
     )
     for figure in figures:
         assert (cfg.paths.figures / figure).stat().st_size > 0

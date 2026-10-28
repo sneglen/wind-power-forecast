@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from conftest import smoke_config
-from wpforecast import backtest, features, scoring
+from conftest import curve_table, smoke_config, truth
+from wpforecast import backtest, scoring
 from wpforecast.models.power_curve import RLS, Basis, PowerCurve, ridge
 
 DAYS = list(pd.date_range("2024-04-01", "2024-07-31", freq="D").date)
@@ -57,36 +57,9 @@ def test_basis_is_a_partition_of_unity():
     assert np.isfinite(phi[0]).all() and np.isnan(phi[1]).any()
 
 
-def _truth(speed: np.ndarray) -> np.ndarray:
-    return 1 / (1 + np.exp(-(speed - 9.0)))
-
-
 @pytest.fixture(scope="module")
 def table(tmp_path_factory) -> pd.DataFrame:
-    """Perfect NWP, y = curve(speed) + an hourly AR(1) error that persists for hours."""
-    cfg = smoke_config(tmp_path_factory.mktemp("power_curve"))
-    rows = features.skeleton(cfg, DAYS)
-    hours = pd.date_range(
-        rows["time_utc"].min() - pd.Timedelta(days=2), rows["time_utc"].max(), freq="h"
-    )
-    rng = np.random.default_rng(2)
-    speed = pd.Series(
-        np.clip(9 + 4 * np.sin(np.arange(len(hours)) / 17) + rng.normal(0, 1, len(hours)), 0, 25),
-        hours,
-    )
-    error = np.zeros(len(hours))
-    for i in range(1, len(hours)):
-        error[i] = 0.97 * error[i - 1] + rng.normal(0, 0.01)
-    y = pd.Series(np.clip(_truth(speed.to_numpy()) + error, 0, 1), hours)
-    rows["last_known_utc"] = features.last_known_stamp(cfg, rows["issue_time_utc"])
-    for suffix, stamp in (("", "time_utc"), ("@issue", "last_known_utc")):
-        for region in ("onshore", "offshore"):
-            rows[f"wind_speed_100m@{region}{suffix}"] = speed.reindex(rows[stamp]).to_numpy()
-            rows[f"wind_direction_100m@{region}{suffix}"] = 270.0
-    rows["y"] = y.reindex(rows["time_utc"]).to_numpy()
-    rows["y_issue"] = y.reindex(rows["last_known_utc"]).to_numpy()
-    rows["curtailed"] = False
-    return rows.assign(power_mw=1.0, capacity_mw=1.0)
+    return curve_table(smoke_config(tmp_path_factory.mktemp("power_curve")), DAYS)
 
 
 def _model(cfg, forgetting: float = 1.0) -> PowerCurve:
@@ -115,7 +88,7 @@ def test_power_curve_learns_the_curve_and_a_fading_correction(cfg, table):
             for s in ("", "@issue")
         }
     )
-    assert np.allclose(model.point(rows), _truth(speed), atol=0.05)
+    assert np.allclose(model.point(rows), truth(speed), atol=0.05)
     a = model.a
     assert a[0] > 0.6 and a[0] > a[-1]  # the error at issue persists at short horizons only
 
