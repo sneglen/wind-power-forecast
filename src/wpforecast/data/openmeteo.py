@@ -34,6 +34,7 @@ from wpforecast.data import http
 log = logging.getLogger(__name__)
 
 CELL_SELECTION = {"onshore": "land", "offshore": "sea"}
+REQUIRED = ("wind_speed_100m", "wind_direction_100m")  # a run without these is unusable
 HOUR, DAY = 3600.0, 86400.0
 
 
@@ -214,7 +215,8 @@ def _read(path: Path) -> dict:
 def load(cfg: Config) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     """Long NWP table, the grid cell actually used per point, and the runs missing upstream.
 
-    NWP columns: run_utc, valid_utc, lead_h, point, then one column per variable.
+    NWP columns: run_utc, valid_utc, lead_h, point, then one column per variable. A run that
+    the archive returns without complete 100 m wind after lead 0 counts as missing too.
     """
     frames, cells, missing = [], {}, []
     for run in run_times(cfg):
@@ -222,6 +224,7 @@ def load(cfg: Config) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
         if "missing" in payload:
             missing.append(run.isoformat())
             continue
+        run_frames = []
         for group in payload["groups"].values():
             for name, loc in zip(group["points"], group["response"], strict=True):
                 hourly = loc["hourly"]
@@ -236,8 +239,14 @@ def load(cfg: Config) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
                 )
                 for var in cfg.nwp.variables:
                     frame[var] = np.asarray(hourly[var], dtype=np.float32)
-                frames.append(frame)
+                run_frames.append(frame)
                 cells[name] = (loc["latitude"], loc["longitude"], loc["elevation"])
+        wind = pd.concat(run_frames).query("lead_h > 0")[list(REQUIRED)]
+        if wind.isna().any().any():
+            log.warning("openmeteo: run %s has incomplete 100 m wind; treated as missing", run)
+            missing.append(run.isoformat())
+            continue
+        frames += run_frames
 
     nwp = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     if not nwp.empty:

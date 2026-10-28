@@ -334,7 +334,16 @@ otherwise it stops and names that time.
 **Why:** the session of 2026-10-28 stopped at 08:09, one minute after the first of the
 previous morning's calls expired. The message named that minute, but those calls expire
 over 40 minutes. Waiting lets a session started at the named time run to the end.
+
+### D-033 · 2026-10-28 · A run without complete 100 m wind counts as missing
+**Decision:** when the interim tables are built, a run whose 100 m speed or direction has any
+gap after lead 0 is dropped and listed with the missing runs, so the feature builder falls
+back to an older run. Gaps in other variables are reported but kept (only LightGBM uses
+them, and it handles missing values).
 **Evidence:** the archive lacks the 00 UTC runs of 2025-08-05, 08-06, 08-08 and 08-09
-(Open-Meteo: "The requested model run is not available"). They are recorded as missing.
-Target days 2025-08-07 and 08-10 have no usable run and are not forecast; 08-06 and 08-09
-use the previous run.
+("The requested model run is not available") and returns 2025-08-07 with every value null.
+Counted as present, that empty run would have been chosen over a fallback. Target days
+2025-08-07 to 08-10 have no usable run and are not forecast; 08-06 uses the run of 08-04.
+The run of 2026-06-23 lacks 10 m wind, gusts, temperature and pressure and is kept.
+**Also:** the range checks now ignore missing values, which the missing-value check
+reports; before, a gap made them warn although every value was in range.

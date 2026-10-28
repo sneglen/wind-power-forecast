@@ -321,7 +321,10 @@ def _validate(cfg: Config) -> None:
 
     nwp = cfg.nwp
     _check(0 <= nwp.cycle_utc < 24, "[nwp] cycle_utc must be in 0..23")
-    _check(len(nwp.variables) > 0, "[nwp] variables must not be empty")
+    _check(
+        {"wind_speed_100m", "wind_direction_100m"} <= set(nwp.variables),
+        "[nwp] variables must include wind_speed_100m and wind_direction_100m",
+    )
     hours = _issue_hours_utc(issue)
     _check(
         nwp.cycle_utc + nwp.availability_lag_h <= min(hours),

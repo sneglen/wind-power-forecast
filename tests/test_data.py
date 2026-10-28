@@ -2,6 +2,7 @@ import dataclasses
 import datetime as dt
 import gzip
 import json
+import shutil
 from pathlib import Path
 
 import httpx
@@ -195,6 +196,25 @@ def test_fetch_run_rejects_a_wrong_time_axis(cfg, tmp_path, no_sleep):
         openmeteo.fetch_run(
             cfg, httpx.Client(transport=httpx.MockTransport(handler)), run, budget, http.Throttle(0)
         )
+
+
+def test_run_without_wind_counts_as_missing(cfg, tmp_path):
+    raw = tmp_path / "raw"
+    shutil.copytree(cfg.paths.raw, raw)
+    cfg = _offline_raw(cfg, raw)
+    run = openmeteo.run_times(cfg)[3]
+    path = openmeteo.run_path(raw, cfg.nwp.model, run)
+    with gzip.open(path, "rt") as f:
+        payload = json.load(f)
+    for group in payload["groups"].values():  # the archive answered, but with nulls
+        for loc in group["response"]:
+            loc["hourly"]["wind_speed_100m"] = [None] * len(loc["hourly"]["time"])
+    with gzip.open(path, "wt") as f:
+        json.dump(payload, f)
+
+    nwp, _, missing = openmeteo.load(cfg)
+    assert missing == [run.isoformat()]
+    assert run not in set(nwp["run_utc"])
 
 
 def test_sample_runs_use_land_and_sea_cells(cfg):

@@ -54,12 +54,16 @@ Energy per hour (MWh/h) is written as average power (MW).
   low during the ramp-up. Scores in the stress period are therefore reported in MW.
 - **Energinet's forecast** is published at 18:00 local on D−1, seven hours after our issue
   time, from later NWP. It is a benchmark with an information edge, not a competitor on
-  equal terms.
+  equal terms. It has 217 missing hours, the longest gap 72 h.
+- **Production lags.** Settlement data arrives about ten days late: the download of
+  2026-10-26 ends on 2026-10-16, so the last days of the window have no target.
 - **Imbalance price method** changed on 2025-03-19 (single price) and 2026-03-04
   (dominating direction from satisfied demand); the market backtest stays inside one method.
-- **Missing NWP runs.** Open-Meteo's archive lacks the 00 UTC runs of 2025-08-05, 08-06,
-  08-08 and 08-09. Target days 2025-08-07 and 08-10 have no usable run, so no model forecasts
-  them. On 08-06 and 08-09 the previous day's run is used, with longer leads.
+- **Missing NWP runs.** Five consecutive 00 UTC runs are unusable: Open-Meteo's archive lacks
+  2025-08-05, 08-06, 08-08 and 08-09, and returns 2025-08-07 without any values. Target days
+  2025-08-07 to 08-10 therefore have no usable run, so no model forecasts them; on 08-06 the
+  previous day's run is used, with longer leads. The run of 2026-06-23 lacks 10 m wind,
+  gusts, temperature and pressure but has complete 100 m wind, so it is kept.
 - **NWP grid cells.** Onshore points take the nearest land cell with similar elevation,
   offshore points the nearest sea cell (Open-Meteo `cell_selection`); all are within
   7.3 km of the requested coordinates.

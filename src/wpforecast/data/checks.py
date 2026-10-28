@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 
 REPORT = "data_check.md"
 FIGURES = "data_check"
+MIN_BIN_HOURS = 50  # power-curve median drawn only where a 1 m/s bin has this many hours
 
 
 @dataclass
@@ -107,12 +108,14 @@ def check_nwp(cfg: Config, report: Report) -> pd.DataFrame:
     incomplete = per_run[per_run != full]
     after_init = nwp[nwp["lead_h"] > 0]  # hourly max/accumulated fields have no lead 0
     nans = {var: int(after_init[var].isna().sum()) for var in cfg.nwp.variables}
-    speed, direction = nwp["wind_speed_100m"], nwp["wind_direction_100m"]
+    # NaNs are reported by the check above; the ranges are about the values present.
+    speed, direction = nwp["wind_speed_100m"].dropna(), nwp["wind_direction_100m"].dropna()
 
     report.add(
-        "NWP: every run present",
+        "NWP: every run present and usable",
         not missing,
-        f"{expected_runs - len(missing)}/{expected_runs} runs; missing: {missing[:10]}",
+        f"{expected_runs - len(missing)}/{expected_runs} runs; missing or without complete "
+        f"100 m wind: {missing[:10]}",
     )
     report.add(
         "NWP: every run complete", incomplete.empty, f"{len(incomplete)} runs without {full} rows"
@@ -144,7 +147,8 @@ def check_nwp(cfg: Config, report: Report) -> pd.DataFrame:
         "## NWP: ECMWF IFS HRES 00 UTC runs",
         f"{expected_runs - len(missing)} of {expected_runs} runs, leads 0–{cfg.nwp.max_lead_h} h, "
         f"{len(cfg.points)} points, {len(nwp):,} rows.",
-        f"Missing upstream: {', '.join(missing) if missing else 'none'}.",
+        "Missing upstream or without complete 100 m wind: "
+        f"{', '.join(missing) if missing else 'none'}.",
         "### Grid cells used\n\nOnshore points use land cells, offshore points sea cells "
         "(Open-Meteo `cell_selection`).",
         _table(points.round(3)),
@@ -284,13 +288,14 @@ def figures(cfg: Config, nwp: pd.DataFrame, report: Report) -> None:
     if not joined.empty:
         ax.hexbin(joined["speed"], joined["y"], gridsize=40, mincnt=1, bins="log", cmap="Blues")
         bins = np.arange(0, joined["speed"].max() + 1, 1.0)
-        med = joined.groupby(pd.cut(joined["speed"], bins), observed=True)["y"].median()
+        by_bin = joined.groupby(pd.cut(joined["speed"], bins), observed=True)["y"]
+        med = by_bin.median()[by_bin.size() >= MIN_BIN_HOURS]  # sparse storm bins are noise
         ax.plot(
             [b.mid for b in med.index],
             med.to_numpy(),
             color="black",
             lw=1.5,
-            label="median per 1 m/s",
+            label=f"median per 1 m/s (bins with ≥ {MIN_BIN_HOURS} h)",
         )
         ax.legend(loc="upper left", frameon=False)
     ax.set(
