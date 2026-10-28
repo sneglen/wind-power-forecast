@@ -279,13 +279,17 @@ from the logit-normal's quantiles unless stated otherwise:
   ([figure](reports/market/tau_over_time.png)), and its saving is not significant. Choosing a
   level here is a bet on scarcity spikes, and bids that bet are speculation, which balance
   rules do not allow.
-- **A better forecast does not lower this cost.** Persistence, with three times the MAE, is
-  cheaper than the logit-normal, and the band of the difference excludes zero. The cost
-  equals the covariance between the own error and the price spread. Our errors correlate
-  0.79 with those of Energinet's recalibrated forecast, so the market makes the same
-  mistakes, and when we are wrong the system is out of balance in the same direction. A
-  portfolio that is a scaled copy of the DK1 fleet is the extreme case. A single farm's
-  errors are partly its own and would correlate less with the system.
+- **Forecast skill alone does not lower this cost.** Persistence, with three times the MAE,
+  is cheaper than the logit-normal, and the band of the difference only just excludes zero.
+  The cost equals the covariance between the own error and the price spread, and the spread
+  is set by the market's errors. Our errors correlate 0.79 with those of Energinet's
+  recalibrated forecast, so the market makes the same mistakes, and when we are wrong the
+  system is out of balance in the same direction. Persistence's errors are mostly unrelated
+  to the market's, so they average out: it free-rides on everyone else forecasting well. A
+  perfect forecast costs nothing, so the cost falls only with errors that are smaller *and*
+  not shared with the market. A portfolio that is a scaled copy of the DK1 fleet is the
+  extreme case. A single farm's errors are partly its own and would correlate less with the
+  system.
 - **The newsvendor rule comes back only weakly.** The effective penalties are positive in
   both directions: +15.9 EUR/MWh per MWh short, +19.4 per MWh long. That gives
   τ = 19.4 / (15.9 + 19.4) ≈ 0.55, close to the median. Estimated from trailing data, it
