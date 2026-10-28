@@ -347,3 +347,17 @@ Counted as present, that empty run would have been chosen over a fallback. Targe
 The run of 2026-06-23 lacks 10 m wind, gusts, temperature and pressure and is kept.
 **Also:** the range checks now ignore missing values, which the missing-value check
 reports; before, a gap made them warn although every value was in range.
+
+### D-034 · 2026-10-28 · No forecast without a usable weather run
+**Decision:** at an issue time without a usable run, the power curve and the three
+distribution layers return no forecast (NaN), and the harness drops those rows. LightGBM
+could forecast from missing inputs, but is not allowed to.
+**Why:** the first full run crashed on the four such days (2025-08-07 to 08-10): the spline
+basis received no valid speeds. Without weather, any "forecast" is a disguised climatology,
+and every model must skip the same hours for scores to stay comparable.
+**Evidence (full data, test year):** the curves reach 66–67 % CRPS skill over climatology;
+RLS chose λ = 1 again. Skill dips at k = 25–30 (midday) because up to 22 % of those hours
+are curtailed; without them, skill is flat at 0.69–0.75.
+**Open for Step 6:** every model has too many observations below its 5 % quantile (7–12 %);
+quantile regression's lower tail is erratic at high p̂, where data are sparse; LightGBM's
+distribution jumps at its monthly refit.

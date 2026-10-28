@@ -90,3 +90,25 @@ def test_layers_in_the_harness(tmp_path):
     # Training pairs carry the p that was issued, never one refitted with hindsight.
     issued = model.issued.reindex(model.train.index).dropna()
     assert len(issued) and np.allclose(model.train.loc[issued.index, "p_hat"], issued)
+
+
+@pytest.mark.parametrize("kind", ["curve", "quantreg", "logitnormal", "lightgbm"])
+def test_a_day_without_weather_is_skipped(tmp_path, kind):
+    """An issue time with no usable run (all NWP missing) must not break any model."""
+    cfg = smoke_config(tmp_path)
+    days = DAYS[:40]
+    table = curve_table(cfg, days)
+    gap = days[35]
+    nwp = [c for c in table.columns if c.startswith("wind_")]
+    table.loc[table["target_day"] == gap, nwp] = np.nan
+    grid, fit = scoring.crps_levels(cfg), scoring.fit_levels(cfg)
+    curve = PowerCurve("c", cfg.model.rls, 1.0, grid, 10)
+    gbm = dataclasses.replace(cfg.model.gbm, features=("wind_speed_100m@onshore",))
+    model = {
+        "curve": lambda: curve,
+        "quantreg": lambda: QuantileRegression("qr", curve, fit, grid, 200, cfg.model.quantreg, 38),
+        "logitnormal": lambda: LogitNormal("ln", curve, fit, grid, 200, cfg.model.logitnormal, 38),
+        "lightgbm": lambda: GradientBoosting("gbm", curve, fit, grid, 200, gbm),
+    }[kind]()
+    fc = backtest.run(cfg, model, table, "recursive", days[20], days[-1])
+    assert gap not in set(fc["target_day"]) and days[-1] in set(fc["target_day"])

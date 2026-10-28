@@ -398,7 +398,7 @@ def _curve_figures(cfg: Config, params: pd.DataFrame, out_dir: Path, plt) -> Non
         ]
         ax.plot(pd.to_datetime(rows["time_utc"]), level, lw=1, label=f"{v:g} m/s")
     ax.set(ylabel="curve, mean over directions", title="RLS power curve over time")
-    ax.legend(frameon=False)
+    ax.legend(title="wind speed", loc="upper left", bbox_to_anchor=(1.01, 1), frameon=False)
     fig.tight_layout()
     fig.savefig(out_dir / CURVE_TRAJECTORY, dpi=150)
     plt.close(fig)

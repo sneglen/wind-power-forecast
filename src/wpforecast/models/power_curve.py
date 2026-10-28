@@ -67,6 +67,8 @@ class Basis:
     def speed(self, v: np.ndarray, region: str) -> np.ndarray:
         top = self.speed_max[region]
         v = np.clip(np.asarray(v, dtype=float), 0.0, top * (1 - 1e-9))
+        if len(v) == 0:  # e.g. an issue time without a usable weather run
+            return np.empty((0, self.n_speed))
         return BSpline.design_matrix(v, self.t[region], self.degree).toarray()
 
     def matrix(

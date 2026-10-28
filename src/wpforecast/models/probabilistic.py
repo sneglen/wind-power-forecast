@@ -99,10 +99,13 @@ class _Layer:
     def predict(self, inputs: pd.DataFrame) -> np.ndarray:
         p = self.curve.point(inputs)
         self.issued = pd.concat([self.issued, pd.Series(p, index=inputs.index)])
-        if self.fitted_at is None:
-            return np.full((len(inputs), len(self.grid)), np.nan)
-        q = self._quantiles(inputs.assign(p_hat=p))
-        return np.clip(to_grid(q, self.fit_levels, self.grid), 0.0, 1.0)
+        out = np.full((len(inputs), len(self.grid)), np.nan)
+        ok = np.isfinite(p)  # no point forecast (no usable weather run): no distribution
+        if self.fitted_at is None or not ok.any():
+            return out
+        q = self._quantiles(inputs[ok].assign(p_hat=p[ok]))
+        out[ok] = np.clip(to_grid(q, self.fit_levels, self.grid), 0.0, 1.0)
+        return out
 
     # --- model-specific -------------------------------------------------------------------
 
@@ -134,8 +137,14 @@ class QuantileRegression(_Layer):
         return train[train["time_utc"] > now - self.params.window_days * DAY]
 
     def design(self, p: np.ndarray, k: np.ndarray) -> np.ndarray:
-        b = BSpline.design_matrix(np.clip(p, 0, 1 - 1e-9), self.t, self.params.spline_degree)
-        b = b.toarray()
+        """Rows with a missing p come out as NaN."""
+        p = np.asarray(p, dtype=float)
+        ok = np.isfinite(p)
+        b = np.full((len(p), len(self.t) - self.params.spline_degree - 1), np.nan)
+        if ok.any():
+            b[ok] = BSpline.design_matrix(
+                np.clip(p[ok], 0, 1 - 1e-9), self.t, self.params.spline_degree
+            ).toarray()
         return np.hstack([b, b * (np.asarray(k, dtype=float) / self.max_k)[:, None]])
 
     def _fit(self, data: pd.DataFrame) -> None:

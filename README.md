@@ -6,9 +6,9 @@ Day-ahead forecasts of DK1 wind power as calibrated, self-adapting predictive di
 (recursive least squares, time-adaptive quantile regression, bounded distributions), and what
 that uncertainty is worth in the DK1 single-price imbalance market. Data: 2024–2026.
 
-> **Status:** Step 5 — probabilistic layer. The pipeline runs end to end on real DK1 data
-> with three references, frozen, walk-forward and recursive power curves, and three
-> predictive distributions; the full evaluation follows.
+> **Status:** Steps 0–5 are done and run on the full data (2024-03 to 2026-10): three
+> references, frozen, walk-forward and recursive power curves, and three predictive
+> distributions. The full evaluation (Step 6) follows.
 
 Developed with AI assistance (Claude Code); modelling choices and their reasons are mine and
 recorded in [DECISIONS.md](DECISIONS.md).
@@ -117,7 +117,17 @@ Scores (`src/wpforecast/scoring.py`) cover the day-ahead product hours of the te
 All models are scored on the same hours, with and without curtailed hours. `make evaluate`
 writes `outputs/scores.md`.
 
-_First scores on the full data: pending the download (Step 1)._
+**First scores**, test year 2025-03-01 to 2026-02-28, 8,664 day-ahead product hours (all
+models on the same hours; the full evaluation is Step 6):
+
+| Model | CRPS | CRPS skill vs climatology | RMSE (point) |
+|---|---|---|---|
+| Climatology | 0.126 | 0 % | 0.230 |
+| Persistence | 0.133 | −5 % | 0.246 |
+| New reference | 0.116 | +8 % | 0.203 |
+
+Scores are in units of capacity. As expected a day ahead, persistence is worse than
+climatology, and the new reference beats both.
 
 ### Recursive least squares
 
@@ -149,7 +159,18 @@ frozen twin (fitted once on the training and validation data) and the monthly wa
 refit, so all three adaptivity regimes run the same code. λ is chosen on the validation
 period.
 
-_Results on the full data: pending the download (Step 1)._
+**First scores** (test year, same hours as above):
+
+| Power curve | CRPS | CRPS skill vs climatology | RMSE (point) |
+|---|---|---|---|
+| Frozen (fitted once before the test year) | 0.0426 | +66.2 % | 0.0826 |
+| Walk-forward (refit monthly) | 0.0426 | +66.2 % | 0.0824 |
+| Recursive (RLS, updated daily) | 0.0421 | +66.6 % | 0.0818 |
+
+Validation chose λ = 1: before Thor the DK1 curve hardly drifts, so forgetting only adds
+noise, and the three regimes score almost alike. The stress period (Step 9) tests them on a
+real change. Skill dips at midday horizons (k = 25–30) because up to 22 % of those hours are
+curtailed at negative prices; without curtailed hours it stays at 0.69–0.75 across k.
 
 ### Time-adaptive quantile regression
 
@@ -181,7 +202,18 @@ two structured models.
 All three distributions learn from pairs (p̂, y) in which p̂ is the forecast as it was
 issued, so they describe the point model's real out-of-sample errors.
 
-_Results on the full data: pending the download (Step 1)._
+**First scores** (test year, same hours as above):
+
+| Distribution on the RLS curve | CRPS | CRPS skill vs climatology | 5 % / 95 % quantile coverage |
+|---|---|---|---|
+| Curve + its own error quantiles (Step 4) | 0.0421 | +66.6 % | 9.5 % / 93.6 % |
+| Quantile regression | 0.0419 | +66.7 % | 8.4 % / 92.6 % |
+| Generalised logit-normal | 0.0416 | +67.0 % | 7.0 % / 96.1 % |
+| LightGBM quantiles | 0.0413 | +67.2 % | 12.2 % / 86.2 % |
+
+All three improve CRPS slightly. LightGBM is the sharpest but too narrow in the tails; the
+logit-normal is the best calibrated. Every model sees too many observations below its 5 %
+quantile, largely curtailed and other low-output hours; Step 6 examines calibration in full.
 
 ## Evaluation
 
