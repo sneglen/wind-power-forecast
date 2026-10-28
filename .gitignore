@@ -16,7 +16,6 @@ htmlcov/
 /data/raw/
 /data/interim/
 /outputs/
-/figures/
 
 # Editors / OS
 .idea/

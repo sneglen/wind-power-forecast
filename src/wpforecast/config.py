@@ -230,6 +230,13 @@ class Stress:
 
 
 @dataclass(frozen=True)
+class Report:
+    fan_model: str
+    skill_models: tuple[str, ...]
+    reliability_models: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Config:
     paths: Paths
     data: Data
@@ -245,6 +252,7 @@ class Config:
     evaluation: Evaluation
     market: Market
     stress: Stress
+    report: Report
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -552,6 +560,13 @@ def load_config(path: str | Path) -> Config:
             raw,
             "stress",
             events=tuple(Event(**e) for e in _table(raw, "stress").get("events", [])),
+        ),
+        report=_build(
+            Report,
+            raw,
+            "report",
+            skill_models=tuple(_table(raw, "report").get("skill_models", [])),
+            reliability_models=tuple(_table(raw, "report").get("reliability_models", [])),
         ),
     )
     _validate(cfg)

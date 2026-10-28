@@ -45,7 +45,8 @@ TUNING = "tuning.json"
 CURVE_PARAMS = "power_curve_params.parquet"
 CURVE_BY_SECTOR = "power_curve_by_sector.png"
 CURVE_TRAJECTORY = "power_curve_trajectory.png"
-FAN_CHART = "fan_chart_stormy_week.png"
+FAN_CHART = "fan_chart.png"
+SKILL = "skill_by_horizon.png"
 PROBABILISTIC = ("quantreg", "logitnormal", "lightgbm")
 BASELINES = ("climatology", "persistence", "new_reference")
 ENSEMBLE = ("ens_raw", "quantreg_ens", "logitnormal_ens", "lightgbm_ens")
@@ -292,9 +293,10 @@ def score_table(metrics: dict) -> str:
 
 
 def run_figures(cfg: Config) -> Path:
-    """Model figures: the power curve by direction and over time, and a fan chart.
+    """Model and headline figures: the power curve by direction and over time, a fan chart
+    with Energinet's forecast, and CRPS skill by horizon with a reliability inset.
 
-    The verification figures (skill, reliability, PIT, sharpness) come with the evaluation.
+    The full verification figures (PIT, sharpness, ...) come with the evaluation.
     """
     import matplotlib
 
@@ -308,49 +310,90 @@ def run_figures(cfg: Config) -> Path:
     params = cfg.paths.outputs / CURVE_PARAMS
     if params.exists():
         _curve_figures(cfg, pd.read_parquet(params), out_dir, plt)
-    _fan_chart(cfg, pd.read_parquet(cfg.paths.outputs / FORECASTS), out_dir, plt)
+    fc = pd.read_parquet(cfg.paths.outputs / FORECASTS)
+    _fan_chart(cfg, fc, out_dir, plt)
+    _skill_figure(cfg, fc, out_dir, plt)
     log.info("figures: -> %s", out_dir)
     return out_dir
 
 
-def stormiest_week(fc: pd.DataFrame) -> list:
-    """The seven consecutive test days with the highest mean observed y (product hours)."""
+def eventful_week(fc: pd.DataFrame) -> list:
+    """The seven consecutive test days with the largest hour-to-hour change of the observed y
+    (product hours): ramps, where the spread of a forecast matters most."""
     test = fc[(fc["period"] == "test") & fc["in_product"]].drop_duplicates("time_utc")
-    daily = test.groupby("target_day")["y"].mean()
+    test = test.sort_values("time_utc")
+    daily = test["y"].diff().abs().groupby(test["target_day"]).sum()
     if len(daily) < 7:
         return list(daily.index)
-    end = daily.rolling(7).mean().idxmax()
+    end = daily.rolling(7).sum().idxmax()
     position = list(daily.index).index(end)
     return list(daily.index[position - 6 : position + 1])
 
 
 def _fan_chart(cfg: Config, fc: pd.DataFrame, out_dir: Path, plt) -> None:
-    names = [n for n in PROBABILISTIC if n in set(fc["model"])]
-    if not names:
+    name = cfg.report.fan_model
+    if name not in set(fc["model"]):
         return
-    week = stormiest_week(fc)
-    rows = fc[fc["target_day"].isin(week) & fc["in_product"]]
-    fig, axes = plt.subplots(len(names), 1, figsize=(9, 2.4 * len(names)), sharex=True)
-    for ax, name in zip(np.atleast_1d(axes), names, strict=True):
-        f = rows[rows["model"] == name].sort_values("time_utc")
-        t = f["time_utc"]
-        for lo, hi, alpha in ((0.05, 0.95, 0.25), (0.25, 0.75, 0.45)):
-            ax.fill_between(
-                t,
-                f[scoring.qcol(lo)],
-                f[scoring.qcol(hi)],
-                color="C0",
-                alpha=alpha,
-                lw=0,
-                label=f"{lo:.0%}–{hi:.0%}",
-            )
-        ax.plot(t, f[scoring.qcol(0.5)], color="C0", lw=1, label="median")
-        ax.plot(t, f["y"], color="k", lw=0.8, label="observed")
-        ax.set(ylim=(0, 1), ylabel="y = P / C", title=name)
-    np.atleast_1d(axes)[0].legend(loc="upper right", fontsize=7, ncol=4, frameon=False)
-    fig.suptitle(f"Day-ahead forecasts, stormiest test week from {week[0]}")
+    week = eventful_week(fc)
+    f = fc[fc["target_day"].isin(week) & fc["in_product"] & (fc["model"] == name)]
+    f = f.sort_values("time_utc")
+    t = f["time_utc"]
+    fig, ax = plt.subplots(figsize=(10, 3.6))
+    for lo, hi, alpha in ((0.05, 0.95, 0.2), (0.25, 0.75, 0.4)):
+        ax.fill_between(
+            t,
+            f[scoring.qcol(lo)],
+            f[scoring.qcol(hi)],
+            color="C0",
+            alpha=alpha,
+            lw=0,
+            label=f"{lo:.0%}–{hi:.0%}",
+        )
+    ax.plot(t, f[scoring.qcol(0.5)], color="C0", lw=1.2, label=f"median ({name})")
+    found = evaluation.energinet_forecast(cfg)
+    if found is not None:
+        energinet = found[0].reindex(t).to_numpy() / f["capacity_mw"].to_numpy()
+        ax.plot(t, energinet, color="C1", lw=1, ls="--", label="Energinet, issued 18:00")
+    ax.plot(t, f["y"], color="k", lw=1, label="observed")
+    ax.set(ylim=(0, 1), ylabel="y = P / C", title=f"Issued 11:00 on D−1: test week from {week[0]}")
+    ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1), fontsize=8, frameon=False)
     fig.tight_layout()
     fig.savefig(out_dir / FAN_CHART, dpi=150)
+    plt.close(fig)
+
+
+def _skill_figure(cfg: Config, fc: pd.DataFrame, out_dir: Path, plt) -> None:
+    """CRPS skill vs climatology by horizon for ``[report] skill_models``, beside the
+    reliability (observed minus nominal frequency, bootstrap bands) of ``reliability_models``."""
+    rows = evaluation.add_row_scores(cfg, evaluation.scored_rows(fc))
+    if rows.empty or REFERENCE not in set(rows["model"]):
+        return
+    by_k = evaluation.by_horizon(cfg, rows, "crps")
+    fig, (ax, rel_ax) = plt.subplots(1, 2, figsize=(11, 4.4), gridspec_kw={"width_ratios": [2, 1]})
+    ax.axhline(0, color="0.6", lw=0.8)
+    for name in [n for n in cfg.report.skill_models if n in by_k]:
+        ax.plot(by_k.index, 1 - by_k[name] / by_k[REFERENCE], lw=1.4, label=name)
+    ax.set(
+        xlabel="horizon k (h): k = 14 is 00–01 local on day D, k = 37 is 23–24",
+        ylabel=f"CRPS skill vs {REFERENCE}",
+        title=f"Test year {cfg.dates.test_start} to {cfg.dates.test_end}",
+        ylim=(-0.1, 0.9),
+    )
+    ax.legend(loc="center left", fontsize=8, ncol=2, frameon=False, bbox_to_anchor=(0, 0.3))
+    names = [n for n in cfg.report.reliability_models if n in set(rows["model"])]
+    rel = evaluation.reliability(cfg, rows[rows["model"].isin(names)], np.random.default_rng(0))
+    for name, r in rel.groupby("model", sort=False):
+        rel_ax.fill_between(r["level"], r["lo"] - r["level"], r["hi"] - r["level"], alpha=0.2)
+        rel_ax.plot(r["level"], r["observed"] - r["level"], marker="o", ms=2, lw=1, label=name)
+    rel_ax.axhline(0, color="0.6", lw=0.8)
+    rel_ax.set(
+        xlabel="nominal quantile level",
+        ylabel="observed − nominal frequency",
+        title="Reliability (0 = calibrated)",
+    )
+    rel_ax.legend(fontsize=8, frameon=False)
+    fig.tight_layout()
+    fig.savefig(out_dir / SKILL, dpi=150)
     plt.close(fig)
 
 

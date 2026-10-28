@@ -68,6 +68,7 @@ def test_pipeline_end_to_end(cfg):
         pipeline.CURVE_BY_SECTOR,
         pipeline.CURVE_TRAJECTORY,
         pipeline.FAN_CHART,
+        pipeline.SKILL,
     )
     for figure in figures:
         assert (cfg.paths.figures / figure).stat().st_size > 0

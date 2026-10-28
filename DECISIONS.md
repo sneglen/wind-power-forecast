@@ -582,3 +582,23 @@ is about half of Thor, consistent with 36 of 72 turbines by July.
   separated here.
 **Rejected:** tuning λ or the reset size on the stress period, which is the evaluation;
 scoring the stress period in units of capacity.
+
+### D-045 · 2026-10-28 · Report: headline figures committed, THEORY.md, v1.0
+**Decision:** `make figures` writes to `reports/figures/` (`[paths] figures`), which is
+committed, so the README shows current figures. The figures:
+- the fan chart: the logit-normal distribution, the observed power and Energinet's
+  forecast, over the test week with the largest hour-to-hour change in power (ramps, where
+  the spread matters);
+- CRPS skill by horizon for eight models, beside the reliability, with bootstrap bands, of
+  the three distributions;
+- the Step 9 rolling bias and CRPS in MW.
+
+`[report]` names the models in these figures. THEORY.md (RLS as a Kalman filter,
+quantile regression as an LP, the censored logit-normal likelihood, the single-price
+newsvendor, scoring) and README sections for limitations and next steps complete the
+plan's Step 10. v1.0 is tagged after `make all` has reproduced every committed report
+and figure from the raw cache.
+**Why:** a reviewer reads the README and three figures first. A random or stormiest week
+would show flat full-output stretches; ramps show the forecasts' spread at work.
+**Rejected:** the imbalance cost-vs-τ figure as the third headline figure. It stays in the
+market section, because adaptivity is the ENFOR story.

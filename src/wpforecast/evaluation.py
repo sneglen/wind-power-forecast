@@ -314,7 +314,7 @@ def _spread_skill_figure(cfg: Config, rows: pd.DataFrame, out: Path) -> None:
 # --- figures --------------------------------------------------------------------------------
 
 
-def _by_horizon(cfg: Config, rows: pd.DataFrame, column: str) -> pd.DataFrame:
+def by_horizon(cfg: Config, rows: pd.DataFrame, column: str) -> pd.DataFrame:
     """Mean of ``column`` per horizon and model, for horizons with enough hours."""
     first = rows["model"].iloc[0]
     count = rows[rows["model"] == first].groupby("horizon_h").size()
@@ -338,7 +338,7 @@ def _figures(cfg: Config, rows: pd.DataFrame, rel: pd.DataFrame, pits: dict, out
         (("all hours", rows), ("excluding curtailed hours", rows[~rows["curtailed"]])),
         strict=True,
     ):
-        by_k = _by_horizon(cfg, sel, "crps")
+        by_k = by_horizon(cfg, sel, "crps")
         ax.axhline(0, color="0.6", lw=1)
         if REFERENCE in by_k:
             for n in others:
@@ -384,7 +384,7 @@ def _figures(cfg: Config, rows: pd.DataFrame, rel: pd.DataFrame, pits: dict, out
 
     widest = max(cfg.evaluation.intervals)
     fig, ax = plt.subplots(figsize=(6, 3.5))
-    by_k = _by_horizon(cfg, rows, f"width_{widest:g}")
+    by_k = by_horizon(cfg, rows, f"width_{widest:g}")
     for n in [n for n in names if n in by_k]:
         ax.plot(by_k.index, by_k[n], lw=1.2, label=n)
     ax.set(xlabel="horizon k (h)", ylabel=f"mean width of the {widest:.0%} interval")

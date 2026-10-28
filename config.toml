@@ -6,7 +6,7 @@
 raw = "data/raw"              # download cache: responses as received (`make data`)
 interim = "data/interim"      # cleaned UTC tables built from the cache
 outputs = "outputs"
-figures = "figures"
+figures = "reports/figures"   # committed: the README's headline and model figures
 reports = "reports"           # committed reports, e.g. the data check
 
 [data]
@@ -216,3 +216,12 @@ events = [
     { date = 2026-03-01, label = "Thor registered (+1,058 MW)" },
     { date = 2026-05-13, label = "IFS 50r1 (first 00 UTC run)" },
 ]
+
+[report]
+# Step 10: the README's headline figures (`make figures`).
+fan_model = "logitnormal"     # the fan chart's distribution: the best calibrated in the tails
+skill_models = [
+    "new_reference", "curve_frozen", "curve_rls", "quantreg", "logitnormal", "lightgbm",
+    "ens_raw", "lightgbm_ens",
+]
+reliability_models = ["quantreg", "logitnormal", "lightgbm"]

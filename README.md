@@ -6,17 +6,46 @@ Day-ahead forecasts of DK1 wind power as calibrated, self-adapting predictive di
 (recursive least squares, time-adaptive quantile regression, bounded distributions), and what
 that uncertainty is worth in the DK1 single-price imbalance market. Data: 2024–2026.
 
-> **Status:** Steps 0–9 are done on the full data (2024-03 to 2026-10): three references,
+> **Status:** v1.0, complete on the full data (2024-03 to 2026-10): three references,
 > frozen, walk-forward and recursive power curves, three predictive distributions, the
 > test-year evaluation, the DK1 single-price market backtest, the ECMWF ensemble extension
-> and the Thor regime-change demo. The final report (Step 10) follows.
+> and the Thor regime-change demo. `make all` reproduces every table and figure.
 
 Developed with AI assistance (Claude Code); modelling choices and their reasons are mine and
 recorded in [DECISIONS.md](DECISIONS.md).
 
 ## Results at a glance
 
-_Pending._
+On a strictly out-of-sample test year (2025-03-01 to 2026-02-28, 8,664 day-ahead hours,
+forecasts issued at 11:00 on D−1):
+
+| | Result |
+|---|---|
+| Probabilistic skill | CRPS skill vs climatology +67.8 % (raw ECMWF ensemble through the RLS curve; LightGBM with the ensemble spread ties); logit-normal and quantile regression +67.4 %; the new-reference benchmark +8.1 % |
+| Calibration | logit-normal: 90 % interval covers 90 %; LightGBM is sharper but covers only 74 % |
+| Point accuracy | RMSE 8.1 % of capacity; Energinet's forecast, issued 7 h later, 10.0 % as published and 6.9 % recalibrated |
+| DK1 single-price market | no bid quantile beats the median (≈ 3.3 EUR/MWh); at fleet scale the cost measures how much your errors resemble the market's, not forecast skill |
+| Thor's ramp-up (MW) | forgetting halves the over-forecast (+124 → +58 MW) but costs accuracy in stable times: no single λ suits both |
+
+![Fan chart: logit-normal forecast, Energinet and observed power over a test week](reports/figures/fan_chart.png)
+
+![CRPS skill by horizon and reliability](reports/figures/skill_by_horizon.png)
+
+![Bias and CRPS in MW through Thor's ramp-up and IFS 50r1](reports/stress/rolling.png)
+
+**In three sentences.** A reproducible pipeline issues day-ahead DK1 wind power forecasts as
+calibrated predictive distributions (adaptive RLS power curves with quantile-regression,
+censored logit-normal, LightGBM and ECMWF-ensemble layers), reaching 67–68 % CRPS skill over
+climatology on a strictly out-of-sample test year ([figure](reports/figures/skill_by_horizon.png)).
+Under DK1's single imbalance price, no bid quantile beats the median, and for a fleet-like
+portfolio the imbalance cost measures how far its errors coincide with the market's rather
+than its skill ([market](#dk1-imbalance-market-backtest)). Through Thor's 1 GW ramp-up the
+recursive estimators show, in MW, the tracking-versus-variance trade-off of forgetting, and
+the stress test exposed and fixed a covariance-windup defect
+([figure](reports/stress/rolling.png)).
+
+Theory notes (RLS as a Kalman filter, quantile regression as a linear program, the censored
+logit-normal likelihood, the single-price newsvendor): [THEORY.md](THEORY.md).
 
 ## Quick start
 
@@ -59,6 +88,7 @@ that day and production known up to the issue time.
 | Energinet's day-ahead wind forecast (benchmark) | Energinet | 1 h |
 | Day-ahead and imbalance prices | Energinet | 1 h / 15 min |
 | ECMWF IFS HRES 00 UTC runs, 19 points, leads 0–72 h | Open-Meteo | 1 h |
+| ECMWF IFS ENS 00 UTC runs, 51 members, 100 m wind | dynamical.org | 3 h |
 
 The 19 NWP points are 12 onshore cells on a 0.5° grid over Jutland and Funen plus the
 offshore farms Horns Rev 1–3, Vesterhav Nord/Syd, Anholt and Thor. Tables, units and
@@ -411,6 +441,37 @@ D-044).
 
 ![Rolling bias and CRPS through Thor and IFS 50r1](reports/stress/rolling.png)
 
+## Limitations
+
+- **One weather model family.** ECMWF HRES and ENS only; the archive starts in March 2024,
+  so the training history is short and the test is a single year.
+- **Validation is short and one season.** 90 winter days decided λ and showed the raw
+  ensemble as worse than it was over the year; a 2–3 % difference there is noise.
+- **Curtailment is inferred**, from day-ahead prices ≤ 0, not from operator data, and
+  available power during curtailment is not modelled.
+- **Capacity comes from a register** that runs ahead of commissioning (Thor), so y = P/C is
+  biased during ramp-ups.
+- **The market study uses a scaled copy of the fleet**, the case where one's errors
+  coincide most with the system's. Hourly bids stand in for the 15-min products traded since
+  2025-10-01.
+- **The Energinet benchmark is not like for like.** It is issued 7 h later with newer
+  weather, covers slightly different plants and excludes Thor.
+
+## What I would do next at ENFOR
+
+- **Multi-NWP combination.** HRES, the ENS mean and other centres, combined with adaptive
+  weights. Here the ensemble alone already matches the post-processed HRES models.
+- **Spatio-temporal correction.** Upstream observations and neighbouring price areas for the
+  first hours of D, where the short-horizon term a_k now fades.
+- **15-min products and curtailment-aware available power**, now that both matter for DK1
+  bidding.
+- **Event-aware adaptation.** A partial or offshore-only covariance reset, or variable
+  forgetting, at known fleet and NWP changes, instead of the full reset that over-reacted
+  here.
+- **Rolling-origin evaluation and a single-farm market study.** The first gives sharper
+  model comparisons; the second tests whether forecast skill pays when errors are partly
+  idiosyncratic.
+
 ## Reproducibility
 
 - **Environment:** Python 3.12.15 pinned in `.python-version` (`pyproject.toml` allows 3.12.x); every
@@ -454,9 +515,10 @@ tests/                    unit tests, look-ahead test, end-to-end smoke test
 data/README.md            data dictionary, caveats, licences
 data/sample/              committed slice of real data + smoke config
 data/raw, data/interim    downloaded / derived data (git-ignored)
-reports/                  data check, evaluation, market and stress reports, with figures
-outputs/, figures/        generated artefacts (git-ignored)
+reports/                  data check, evaluation, market and stress reports; figures/ for the README
+outputs/                  generated artefacts (git-ignored)
 DECISIONS.md              running decision log
+THEORY.md                 theory notes: RLS, quantile regression LP, logit-normal, newsvendor
 CLAUDE.md                 project rules for AI-assisted work
 ```
 
@@ -491,6 +553,9 @@ Design choices, with reasons and rejected alternatives, are recorded in
 - T. Gneiting, A. E. Raftery, A. H. Westveld, T. Goldman (2005). Calibrated probabilistic
   forecasting using ensemble model output statistics and minimum CRPS estimation.
   *Monthly Weather Review* 133(5).
+- R. Koenker, G. Bassett (1978). Regression quantiles. *Econometrica* 46(1).
+- T. Gneiting, F. Balabdaoui, A. E. Raftery (2007). Probabilistic forecasts, calibration and
+  sharpness. *JRSS Series B* 69(2).
 - T. Gneiting, A. E. Raftery (2007). Strictly proper scoring rules, prediction, and
   estimation. *JASA* 102(477).
 
