@@ -29,3 +29,5 @@ ledger.json
 # Misc
 plan-chat.md
 todo-evs.md
+tuning-evs.md
+tune-evs.py
