@@ -5,7 +5,8 @@ horizon k and (for the gradient-boosted model) the NWP inputs:
 
 - ``QuantileRegression`` (Nielsen et al., 2006): q_tau = [B(p), B(p) k/K]' gamma_tau, linear
   quantile regression on a B-spline basis in p; refit weekly on a rolling window. A
-  pragmatic stand-in for time-adaptive quantile regression (Moller et al., 2008).
+  pragmatic stand-in for time-adaptive quantile regression (Moller et al., 2008). Solved by
+  statsmodels' IRLS or, exactly, as a linear program by HiGHS (``solver``).
 - ``LogitNormal`` (Pinson, 2012): the generalised logit z = log(y^nu / (1 - y^nu)) is normal,
   mu and log sigma linear in z(p), z(p)^2 and k, fitted by maximum likelihood with the
   bounds as censored observations; refit monthly on all known data.
@@ -138,6 +139,20 @@ class _Layer:
         raise NotImplementedError
 
 
+def quantile_lp(X: np.ndarray, y: np.ndarray, tau: float) -> np.ndarray:
+    """Exact linear quantile regression (Koenker & Bassett, 1978), solved by HiGHS.
+
+    The primal LP, min tau 1'u + (1 - tau) 1'v s.t. X b + u - v = y, u, v >= 0, has 2n + p
+    variables. Its dual, max y'a s.t. X'a = (1 - tau) X'1, 0 <= a <= 1, has n bounded variables
+    and p constraints, and solves ~15x faster; b is the dual's constraint multipliers."""
+    result = optimize.linprog(
+        -y, A_eq=X.T, b_eq=(1 - tau) * X.sum(axis=0), bounds=(0, 1), method="highs"
+    )
+    if not result.success:
+        raise RuntimeError(f"quantile regression LP failed at tau = {tau}: {result.message}")
+    return -result.eqlin.marginals
+
+
 def _monthly(fitted_at: pd.Timestamp | None, now: pd.Timestamp) -> bool:
     return fitted_at is None or (now.year, now.month) != (fitted_at.year, fitted_at.month)
 
@@ -178,10 +193,14 @@ class QuantileRegression(_Layer):
         return self.design(rows["p_hat"].to_numpy(), rows["horizon_h"].to_numpy(), spread)
 
     def _fit(self, data: pd.DataFrame) -> None:
-        import statsmodels.api as sm
-
         X = self._design(data)
         y = data["y"].to_numpy(dtype=float)
+        if self.params.solver == "highs":
+            self.gamma = np.column_stack([quantile_lp(X, y, tau) for tau in self.fit_levels])
+            return
+
+        import statsmodels.api as sm
+
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")  # iteration-limit warnings on flat tails
             self.gamma = np.column_stack(

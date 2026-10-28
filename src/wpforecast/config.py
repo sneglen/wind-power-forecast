@@ -15,6 +15,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 REGIMES = ("frozen", "walk_forward", "recursive")
+QR_SOLVERS = ("irls", "highs")
 
 
 @dataclass(frozen=True)
@@ -159,6 +160,7 @@ class QuantReg:
     refit_days: int
     spline_knots: int
     spline_degree: int
+    solver: str
 
 
 @dataclass(frozen=True)
@@ -405,6 +407,7 @@ def _validate(cfg: Config) -> None:
     _check(m.probabilistic.min_train_rows >= 1, "[model.probabilistic] min_train_rows >= 1")
     _check(m.quantreg.refit_days <= m.quantreg.window_days, "[model.quantreg] refit > window")
     _check(m.quantreg.spline_knots >= 1, "[model.quantreg] spline_knots must be >= 1")
+    _check(m.quantreg.solver in QR_SOLVERS, f"[model.quantreg] solver must be one of {QR_SOLVERS}")
     _check(len(m.gbm.features) > 0, "[model.gbm] features must not be empty")
     _check(m.logitnormal.nu > 0, "[model.logitnormal] nu must be > 0")
     _check(0 < m.logitnormal.epsilon < 0.5, "[model.logitnormal] epsilon must be in (0, 0.5)")

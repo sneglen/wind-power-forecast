@@ -463,3 +463,23 @@ its twin without s, with Diebold–Mariano tests, and spread–skill curves.
 **Why:** the plan's Extension A. Spread in power units, not wind, carries the curve's
 nonlinearity: a wide wind spread near cut-in or rated power means little power uncertainty.
 **Not done:** the optional adaptive HRES/ENS-mean combination; it is left for later.
+
+### D-041 · 2026-10-28 · Quantile regression solver: IRLS or HiGHS, IRLS by default
+**Decision:** `[model.quantreg] solver` selects statsmodels' IRLS (`"irls"`, the default) or
+the exact linear program solved by SciPy's HiGHS (`"highs"`). HiGHS solves the dual LP:
+n variables bounded in [0, 1] and p equality constraints. The coefficients are the
+constraint multipliers.
+**Why:** IRLS made `quantreg_ens` take 33 minutes in the full backtest. On validation, HiGHS
+is 2.8× faster for `quantreg` (65 s against 181 s) and 5× faster for `quantreg_ens` (123 s
+against 629 s). It reaches the same pinball loss, with quantiles within 0.004 of IRLS on
+synthetic data. The dual is about 15× faster than the primal (2n + p variables).
+**Why IRLS stays the default:** validation CRPS is not significantly different (0.0344
+against 0.0341, DM p = 0.27), but 99 % of that gap comes from one storm hour (2025-01-24
+13:00 UTC, p̂ = 0.85). There, both solvers give nonsense quantiles for k ≥ 16; IRLS's
+median, for example, is −1.17. The cause is the model, not the solver: the B-spline basis
+in p spans [0, 1] with uniform knots, while the training p̂ stop near 0.88, so the top basis
+functions rest on a handful of points. IRLS's early stop hides this less badly than the
+exact optimum does. Switching the default would change the committed results without
+fixing that.
+**Open:** a quantile regression basis that stays identified at high p̂, e.g. knots over the
+training range of p̂ with constant extrapolation beyond it, or a ridge penalty.

@@ -68,6 +68,7 @@ def _write(tmp_path: Path, extra: str) -> Path:
         ("[data]\nstart = 2024-05-01", "must precede"),
         ("[data.openmeteo]\ncalls_per_hour = 20000", "budgets"),
         ("[model.rls]\ntypo = 1", "unexpected or missing keys"),
+        ('[model.quantreg]\nsolver = "simplex"', "solver must be one of"),
     ],
 )
 def test_invalid_config_rejected(tmp_path, override, message):

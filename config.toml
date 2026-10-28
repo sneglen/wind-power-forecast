@@ -155,6 +155,9 @@ window_days = 180             # rolling window
 refit_days = 7                # weekly refit
 spline_knots = 5              # interior knots of the B-spline in p over [0, 1]
 spline_degree = 3
+# "irls": statsmodels' iteratively reweighted least squares (approximate, max 2000 iterations);
+# "highs": the exact linear program, solved by SciPy's HiGHS.
+solver = "irls"
 
 [model.logitnormal]
 # Generalised logit-normal: z = log(y^nu / (1 - y^nu)) ~ N(mu, sigma^2), censored at

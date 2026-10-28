@@ -6,12 +6,14 @@ import pytest
 
 from conftest import curve_table, smoke_config
 from wpforecast import backtest, scoring
+from wpforecast.config import QR_SOLVERS
 from wpforecast.models.power_curve import PowerCurve
 from wpforecast.models.probabilistic import (
     GradientBoosting,
     LogitNormal,
     QuantileRegression,
     RawEnsemble,
+    quantile_lp,
 )
 
 DAYS = list(pd.date_range("2024-04-01", "2024-06-30", freq="D").date)
@@ -174,3 +176,29 @@ def test_ensemble_models_in_the_harness(tmp_path):
     # Training pairs carry the spread that was issued, like p.
     issued = model.issued_spread.reindex(model.train.index).dropna()
     assert len(issued) and np.allclose(model.train.loc[issued.index, "ens_spread"], issued)
+
+
+def test_quantile_lp_gives_order_statistics():
+    """Intercept only: the tau-quantile of the sample, the ceil(n tau)-th order statistic."""
+    y = np.array([3.0, 50.0, 1.0, 10.0, 2.0])
+    X = np.ones((5, 1))
+    assert quantile_lp(X, y, 0.5) == pytest.approx([3.0])
+    assert quantile_lp(X, y, 0.9) == pytest.approx([50.0])
+    assert quantile_lp(X, y, 0.1) == pytest.approx([1.0])
+
+
+def test_highs_and_irls_solve_the_same_quantile_regression(cfg):
+    """HiGHS solves the LP exactly, IRLS approximates it: no worse loss, the same quantiles."""
+    data = _pairs_with_spread()
+    y = data["y"].to_numpy()
+    quantiles, loss = {}, {}
+    for solver in QR_SOLVERS:
+        params = dataclasses.replace(cfg.model.quantreg, solver=solver)
+        model = QuantileRegression(
+            "t", None, tuple(LEVELS), tuple(LEVELS), 1, params, 38, ensemble=True
+        )
+        model._fit(data)
+        quantiles[solver] = model._quantiles(data)
+        loss[solver] = scoring.pinball(y, quantiles[solver], LEVELS).mean(axis=0)
+    assert (loss["highs"] <= loss["irls"] + 1e-9).all()
+    assert np.abs(quantiles["highs"] - quantiles["irls"]).max() < 0.01
