@@ -361,3 +361,14 @@ are curtailed; without them, skill is flat at 0.69–0.75.
 **Open for Step 6:** every model has too many observations below its 5 % quantile (7–12 %);
 quantile regression's lower tail is erratic at high p̂, where data are sparse; LightGBM's
 distribution jumps at its monthly refit.
+
+### D-035 · 2026-10-28 · Raw data published as a release snapshot, not committed
+**Decision:** the raw cache (Energinet, HRES, ENS; 93 MB compressed) is a GitHub Release
+asset, tag `data-2026-10-25`, with a SHA-256 checksum and an attribution file;
+`make data-snapshot` fetches, verifies and unpacks it. Git still holds only the smoke sample.
+**Why:** the full download takes two days on Open-Meteo's free tier, and Energinet revises
+settlement data, so a fresh download would not reproduce the results exactly. In git, every
+refresh would add another copy to the history of every clone. All three licences (CC BY 4.0)
+allow redistribution with attribution.
+**Rejected:** committing the data (history bloat); Git LFS (bandwidth quotas on a public
+repository); a Zenodo DOI (permanent, not needed now).

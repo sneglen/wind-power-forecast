@@ -1,11 +1,12 @@
 # Reproducible pipeline entry points. Override the config with `make all CONFIG=path.toml`.
 CONFIG ?= config.toml
+SNAPSHOT ?= data-2026-10-25
 RUN := uv run wpforecast
 
-.PHONY: help install data check ens features backtest evaluate figures all smoke sample lint test ci-watch clean
+.PHONY: help install data data-snapshot check ens features backtest evaluate figures all smoke sample lint test ci-watch clean
 
 help:  ## List targets
-	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
+	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
 
 install:  ## Create the locked environment and install git hooks
 	uv sync --locked
@@ -16,6 +17,9 @@ data:  ## Download (cached, resumable), build interim tables, write data check
 
 check:  ## Re-run the data check report on the interim tables
 	$(RUN) check --config $(CONFIG)
+
+data-snapshot:  ## Fetch the frozen raw-data snapshot (GitHub Release) instead of downloading
+	scripts/fetch_snapshot.sh $(SNAPSHOT)
 
 ens:  ## Download ECMWF ENS point values from dynamical.org (Extension A, ~1 h)
 	$(RUN) ens --config $(CONFIG)

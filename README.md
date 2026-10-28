@@ -26,7 +26,8 @@ git clone git@github.com:sneglen/wind-power-forecast.git && cd wind-power-foreca
 make install   # locked environment + pre-commit hooks
 make smoke     # full pipeline, offline, on a committed 24-day slice of real data
 make test      # test suite
-make data      # download all inputs (resumable; ~2 days on the Open-Meteo free tier)
+make data-snapshot  # fetch the frozen raw data (93 MB, GitHub Release data-2026-10-25)
+make data      # build the tables (downloads only what is missing: ~2 days from scratch)
 make all       # full pipeline on the downloaded data
 ```
 

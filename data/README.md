@@ -5,6 +5,11 @@ the data-check report ([reports/data_check.md](../reports/data_check.md)). Downl
 cached and resumable: a re-run fetches only what is missing. Only the small smoke sample
 in `data/sample/` is committed.
 
+The raw cache the results were made with is published as a frozen snapshot: the GitHub
+Release [`data-2026-10-25`](https://github.com/sneglen/wind-power-forecast/releases/tag/data-2026-10-25)
+(93 MB, checksum-verified, with the attribution of all three sources). `make data-snapshot`
+unpacks it into `data/raw/`; `make data` then builds every table without downloading.
+
 | Directory | Contents | In git |
 |---|---|---|
 | `data/raw/` | responses as received, one file per request chunk | no |
