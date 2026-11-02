@@ -256,8 +256,12 @@ quantile, largely curtailed and other low-output hours; Step 6 examines calibrat
 
 ## Evaluation
 
-The test year (2025-03-01 to 2026-02-28) is scored once, with every hyper-parameter frozen
-beforehand, following Madsen et al. (2005) and Pinson et al. (2007). The full report, with
+The test year (2025-03-01 to 2026-02-28) is held out, following Madsen et al. (2005) and
+Pinson et al. (2007): every hyper-parameter is chosen on training and validation data, and
+nothing is tuned on the test year. It was scored again after two defects, found outside it,
+were fixed: the quantile regression basis (D-042, found on validation) and the RLS covariance
+bound (D-043, found in the stress period). Nothing else changed between the runs, and every
+number below is from the final run. The full report, with
 figures, is [reports/evaluation.md](reports/evaluation.md) (`make evaluate`). All models are
 scored on the same 8,664 day-ahead product hours (361 days; 4 days have no weather run).
 
