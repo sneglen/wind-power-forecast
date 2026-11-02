@@ -2,6 +2,7 @@
 
 A running record of design decisions. Each entry states the decision, why it was taken and
 what was rejected. Newest entries at the bottom; superseded entries are marked, not deleted.
+[DECISIONS_COMPACT.md](DECISIONS_COMPACT.md) lists only what holds now.
 
 ---
 
@@ -149,7 +150,7 @@ so the 00 UTC run is usable by 07:00 UTC, two hours before the 09:00 UTC summer 
 nothing now and avoid a two-day re-download if Step 5 (gradient boosting) or Step 8 needs
 shear, gusts or air density. The core models use only the 100 m fields.
 
-### D-018 · 2026-10-26 · Open-Meteo free tier with a conservative call budget
+### D-018 · 2026-10-26 · Open-Meteo free tier with a conservative call budget — *stop on a spent daily budget amended by D-032*
 **Decision:** use the free, non-commercial tier with CC BY 4.0 attribution. The downloader
 assumes every location in a request counts as one call (19 per run, undocumented) and keeps
 a rolling ledger under 4500 calls/hour and 9800/day, shared by every config on the machine
@@ -263,7 +264,7 @@ that every model forecast, with and without curtailed hours; skill is
 **Why:** one forecast serves both scores without interpolating quantiles; comparing models
 on different hours would bias skill scores.
 
-### D-028 · 2026-10-27 · Power curve: B-splines x direction, RLS with forgetting — *covariance bound corrected by D-043*
+### D-028 · 2026-10-27 · Power curve: B-splines x direction, RLS with forgetting — *covariance bound and λ = 1 result corrected by D-043*
 **Decision:** `models/power_curve.py` models y = φᵀβ with φ = cubic B-splines of the
 regional 100 m speed (6 interior knots over 0–20 m/s onshore, 0–28 m/s offshore), each times
 [1, cos θ, sin θ] of the regional direction, plus two diurnal harmonics (64 parameters), one
@@ -278,7 +279,8 @@ means pass 17.7 m/s onshore in only 0.1 % of hours (2024-03 to 2025-06), but rea
 offshore. A common 0–25 m/s range left the onshore splines above 18 m/s to the prior.
 **Evidence:** on the HRES data downloaded so far (test 2025-03-01 to 06-08) the curves
 reach an RMSE of 7.7 % of capacity and 64 % CRPS skill over climatology. λ = 1 wins on
-validation, so before Thor there is no drift for the forgetting to follow.
+validation, so before Thor there is no drift for the forgetting to follow. *Corrected by
+D-043: an artefact of the trace bound; validation now picks λ = 0.9999.*
 **Rejected:** the conditional-parametric model of Nielsen et al. (2000), the plan's optional
 variant (more machinery for a direction effect that turns out small); knots at data
 quantiles (they would move between refits).
@@ -293,7 +295,7 @@ they were before those hours were observed.
 **Why:** the plan's formula; prequential residuals keep the correction and the interim
 predictive distribution out-of-sample. Step 5 replaces the error quantiles.
 
-### D-030 · 2026-10-27 · Probabilistic layers on the RLS curve, trained on issued p̂
+### D-030 · 2026-10-27 · Probabilistic layers on the RLS curve, trained on issued p̂ — *quantile regression solver and basis superseded by D-041, D-042*
 **Decision:** `models/probabilistic.py` wraps a power curve (the tuned λ, updated daily) in
 three predictive distributions of y given p̂ and k:
 - **quantile regression** on [B(p̂), B(p̂)·k/38], refit weekly on 180 days (statsmodels);
@@ -318,7 +320,7 @@ LightGBM is the sharpest but too narrow in the tails (5 % / 95 % quantiles cover
 LightGBM is pinned to `num_threads = 4`: with all 16 cores its OpenMP threads spin-wait when
 another process shares the CPU (114 s instead of 2 s on the smoke sample).
 
-### D-031 · 2026-10-27 · Quantile models fitted at 23 levels, interpolated to 99
+### D-031 · 2026-10-27 · Quantile models fitted at 23 levels, interpolated to 99 — *HiGHS rejection reversed by D-041, D-042*
 **Decision:** quantile regression and LightGBM are fitted at the 19 reporting levels plus
 `tail_levels` (0.01, 0.02, 0.98, 0.99), sorted, and interpolated linearly in τ onto the
 99-level CRPS grid; the logit-normal is evaluated at the same levels for consistency. The
@@ -327,6 +329,7 @@ tail levels must include the grid's ends, so nothing is extrapolated.
 (87 ms each); 23 take ~5 min. Between neighbouring levels the quantile function is close to
 linear, and CRPS is insensitive to that interpolation.
 **Rejected:** scipy's HiGHS LP for quantile regression (16× slower than statsmodels here).
+*Reversed by D-041: the dual LP makes HiGHS faster than statsmodels; default since D-042.*
 
 ### D-032 · 2026-10-28 · Wait for the rolling daily budget instead of stopping
 **Decision:** when Open-Meteo's daily budget is spent, the downloader computes when enough
@@ -349,7 +352,7 @@ The run of 2026-06-23 lacks 10 m wind, gusts, temperature and pressure and is ke
 **Also:** the range checks now ignore missing values, which the missing-value check
 reports; before, a gap made them warn although every value was in range.
 
-### D-034 · 2026-10-28 · No forecast without a usable weather run
+### D-034 · 2026-10-28 · No forecast without a usable weather run — *λ = 1 result superseded by D-043*
 **Decision:** at an issue time without a usable run, the power curve and the three
 distribution layers return no forecast (NaN), and the harness drops those rows. LightGBM
 could forecast from missing inputs, but is not allowed to.
@@ -357,11 +360,12 @@ could forecast from missing inputs, but is not allowed to.
 basis received no valid speeds. Without weather, any "forecast" is a disguised climatology,
 and every model must skip the same hours for scores to stay comparable.
 **Evidence (full data, test year):** the curves reach 66–67 % CRPS skill over climatology;
-RLS chose λ = 1 again. Skill dips at k = 25–30 (midday) because up to 22 % of those hours
+RLS chose λ = 1 again (*0.9999 after D-043*). Skill dips at k = 25–30 (midday) because up to 22 % of those hours
 are curtailed; without them, skill is flat at 0.69–0.75.
 **Open for Step 6:** every model has too many observations below its 5 % quantile (7–12 %);
 quantile regression's lower tail is erratic at high p̂, where data are sparse; LightGBM's
-distribution jumps at its monthly refit.
+distribution jumps at its monthly refit. *Reported in D-036; the quantile regression tail
+was a basis defect, fixed by D-042.*
 
 ### D-035 · 2026-10-28 · Raw data published as a release snapshot, not committed
 **Decision:** the raw cache (Energinet, HRES, ENS; 93 MB compressed) is a GitHub Release
@@ -374,7 +378,7 @@ allow redistribution with attribution.
 **Rejected:** committing the data (history bloat); Git LFS (bandwidth quotas on a public
 repository); a Zenodo DOI (permanent, not needed now).
 
-### D-036 · 2026-10-28 · Test-year evaluation protocol
+### D-036 · 2026-10-28 · Test-year evaluation protocol — *test year rerun after D-042, D-043*
 **Decision:** `evaluation.py` scores the test year once, on the hours every model forecast,
 with and without curtailed hours: CRPS and skill with a day-block bootstrap band (1,000
 draws, 90 %), MAE and RMSE in % of capacity, the coverage and width of central 50/80/90 %
@@ -392,6 +396,9 @@ It is reported raw and after a linear recalibration fitted on the training perio
 8.2 %); recalibrated, it is better (6.9 %), as its later issue time predicts.
 **Not done:** model changes after seeing the test year. The weaknesses found (too narrow
 LightGBM, a high logit-normal median) are reported, not tuned away.
+*Later:* two defects found outside the test year, on validation (D-042) and in the stress
+period (D-043), were fixed, and the test year was rerun with nothing else changed. The RLS
+curve's RMSE is now 8.09 % (8.2 % above).
 
 ### D-037 · 2026-10-28 · Market backtest: settlement, bids and the trailing window
 **Decision:** `market.py` prices day-ahead bids for a price-taking 100 MW portfolio producing

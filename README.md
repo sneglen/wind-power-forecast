@@ -518,6 +518,7 @@ data/raw, data/interim    downloaded / derived data (git-ignored)
 reports/                  data check, evaluation, market and stress reports; figures/ for the README
 outputs/                  generated artefacts (git-ignored)
 DECISIONS.md              running decision log
+DECISIONS_COMPACT.md      the decisions that hold now, and what was changed along the way
 THEORY.md                 theory notes: RLS, quantile regression LP, logit-normal, newsvendor
 CLAUDE.md                 project rules for AI-assisted work
 ```
@@ -526,6 +527,8 @@ CLAUDE.md                 project rules for AI-assisted work
 
 Design choices, with reasons and rejected alternatives, are recorded in
 [DECISIONS.md](DECISIONS.md) as the project progresses.
+[DECISIONS_COMPACT.md](DECISIONS_COMPACT.md) keeps only what holds now and lists the
+decisions that were later changed or reversed.
 
 ## References
 
